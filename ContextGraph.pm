@@ -3,15 +3,33 @@ package Search::ContextGraph;
 use strict;
 use warnings;
 use Carp;
-use DynaLoader;
-
 use base "Storable";
 
+our $VERSION = '0.07';
 
-our $VERSION = '0.06';
+# If you are in an environment that can't compile XS
+# modules, comment out the next three lines of code
+
+use DynaLoader;
 our @ISA = qw/DynaLoader Storable/;
-
 bootstrap Search::ContextGraph $VERSION;
+
+
+
+
+
+our @log_table = qw/0 1.00 1.69 2.10 2.39 2.61 2.79 2.95 3.08
+				    3.20 3.30 3.40 3.48 3.56 3.64 3.71 3.77 
+				    3.83 3.89 3.94 4.00 4.04 4.09 4.14 4.18 
+				    4.22 4.26 4.30 4.33 4.37 4.40 4.43 4.47 
+				    4.50 4.53 4.56 4.58 4.61 4.64 4.66 4.69 
+				    4.71 4.74 4.76 4.78 4.81 4.83 4.85 4.87 
+				    4.89 4.91/;
+our %log_lookup;
+my $count = 0;
+$log_lookup{$count++} = $_ foreach @log_table;
+
+
 
 
 =head1 NAME
@@ -149,7 +167,14 @@ Default is 1.
 =cut
 
 sub get_activate_threshold {    $_[0]->{'ACTIVATE_THRESHOLD'} }
-sub set_activate_threshold {	$_[0]->{'ACTIVATE_THRESHOLD'} = $_[1] }
+sub set_activate_threshold {
+	my ( $self, $threshold ) =  @_;
+	croak "Can't set activate threshold to zero"
+		unless $threshold;
+	croak "Can't set activate threshold to negative value"
+		unless $threshold > 0;
+	$self->{'ACTIVATE_THRESHOLD'} = $_[1]; 
+}
 
 
 =item [get|set]_collect_threshold
@@ -169,16 +194,13 @@ sub get_collect_threshold {
 sub set_collect_threshold {	
 	 my ( $self, $newval ) = @_;
 	 
-	 return if $newval =~ /[^\d.]/;
-	 if ( $newval < 0 ) {
-	 	$newval = 0;
-	 }
-	 
-	 
+	 $newval ||=0;
+ 
 	 $self->{Graph}->collectionThreshold( $newval )
 	 	if $self->{'xs'};
 	 
-	 $self->{'COLLECT_THRESHOLD'} = $newval;
+	 $self->{'COLLECT_THRESHOLD'} = $newval || 0;
+	 return 1;
 }
 
 =item set_debug_mode [012]
@@ -192,6 +214,12 @@ sub set_debug_mode {
 	$self->{'debug'} = $mode;
 }
 
+
+sub get_dist_weight { $_[0]->{'dist_weight'} }
+sub set_dist_weight { $_[0]->{'dist_weight'} = $_[1] }
+
+
+
 =item [get|set]_initial_energy
 
 Accessor for initial energy value at the query node.  This controls how 
@@ -201,8 +229,14 @@ Increase this value to get more results from your queries.
 =cut
 
 sub get_initial_energy { $_[0]->{'START_ENERGY'} }
-sub set_initial_energy { $_[0]->{'START_ENERGY'} = $_[1] }
-
+sub set_initial_energy { 
+	my ( $self, $start_energy ) = @_;
+	croak "Can't set initial energy to zero"
+		unless $start_energy;
+	croak "Can't set initial energy to negative value"
+		unless $start_energy > 0;
+	$self->{'START_ENERGY'} = $start_energy ;
+	}
 
 =item load_from_tdm TDM_FILE [, LM_FILE]
 
@@ -561,7 +595,6 @@ sub mixed_search {
 	my $tref = $incoming->{'terms'} || [];
 	my $dref = $incoming->{'docs'}  || [];
 
-	
 	my @dnodes = $self->_nodeify( 'D', @{$dref} );
 	my @tnodes = $self->_nodeify( 'T', @{$tref} );
 
@@ -611,7 +644,7 @@ sub _nodeify {
 	my @nodes;
 	foreach my $item ( @list ) {
 		my $name = $prefix.':'.$item;
-		croak "Node $name not found"
+		warn "Node $name not found"
 			unless $self->{'xs'} 
 			or defined $self->{'neighbors'}{$name};
 		push @nodes, $name;
@@ -674,6 +707,7 @@ sub _collect {
  #  energy to neighbor nodes.   Singleton nodes get special treatment 
 
 
+
 sub _energize {
 
 	my ( $self, $node, $energy ) = @_;
@@ -694,7 +728,7 @@ sub _energize {
 
 
 	croak "Fatal error: encountered node of degree zero" unless $degree;
-	my $subenergy = $energy / $degree;
+	my $subenergy = $energy / (log($degree)+1);
 
 
 	# At singleton nodes (words that appear in only one document, for example)
@@ -714,14 +748,13 @@ sub _energize {
 			my $weighted_energy = $subenergy * $edge;
 			print '   ' x $self->{'depth'}, 
 			" edge $edge ($node, $neighbor)\n"
-		 		if $self->{'debug'} > 1;
+				if $self->{'debug'} > 1;
 			$self->_energize( $neighbor, $weighted_energy );
 		} 
 	}	
 	$self->{'depth'}--;	
 	return 1;
 }
-
 
 
 sub get_neighbors {
@@ -732,6 +765,7 @@ sub get_neighbors {
 	}
 	return @list;
 }
+
 
 sub DESTROY {
 	undef $_[0]->{Graph}

@@ -1,4 +1,10 @@
-0.06  7.19.2003
+0.07
+
+- Altered energy distribution scheme to more effective log(degree)+1 
+	(thanks to Martin Spernau for testing this)
+- 
+
+0.06  7.23.2003
 
 - Merged in XS implementation from Schuyler Erle
 - Fixed global weighting bug where counts and weights were being computed in

@@ -14,6 +14,8 @@
 # include <stdlib.h>
 # include <stdio.h>
 # include <string.h>
+# include <math.h>
+
 # define debug 0
 
 
@@ -154,9 +156,11 @@ int energize_node( Graph *graph, long id, float energy, int isStartingPoint) {
     
     /* Activate the node and calculate the propagating energy. */
     *slot += energy;
-    if (node->degree)
-		subenergy = energy / node->degree;    
-	
+    if (node->degree) {
+    	
+    	//printf( "* denominator is %f\n", denom );
+		subenergy = energy / (log( node->degree ) + 1);    
+	}
 
 	/* Special case handling for nodes with just one neighbor 
 	/* Normally, we don't propagate energy at a singleton node 

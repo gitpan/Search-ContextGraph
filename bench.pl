@@ -1,11 +1,12 @@
 #!/usr/bin/perl -w
 
 use Benchmark;
+use blib;
 use Search::ContextGraph;
 my $file = shift;
 my $xs = shift or 0;
 
-my $cg = Search::ContextGraph->new(xs => $xs);
+my $cg = Search::ContextGraph->new(dist_weight => 1, xs => $xs);
 print "Loading from TDM\n";
 $cg->load_from_tdm( $file );
 print "Done\n";
