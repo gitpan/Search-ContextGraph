@@ -18,6 +18,8 @@ t/accessors.t
 t/add_subtract.t
 t/dump.t
 t/has.t
+t/merge.t
+t/intersection.t
 t/invariance.t
 t/rebalancing.t
 t/simple_search.t

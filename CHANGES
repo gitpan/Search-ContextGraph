@@ -1,4 +1,9 @@
-0.11  3.04.2004
+0.12  3.13.2004
+
+- Added intersection method
+- Added merge method
+
+0.11  3.11.2004
 
 - Added add_file method at suggestion of Aaron Cope
 - Fixed bug in term_list method that would always return full list

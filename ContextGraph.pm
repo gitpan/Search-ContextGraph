@@ -7,7 +7,7 @@ use base "Storable";
 use File::Find;
 use IO::Socket;
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 # If you are in an environment that can't compile XS
 # modules, comment out the next three lines of code
@@ -688,6 +688,32 @@ sub has_term {
 }	
 
 
+=item intersection @NODES
+
+Returns a list of neighbor nodes that all the given nodes share in common
+
+=cut
+
+sub intersection {
+	my ( $self, %nodes ) = @_;
+	my @nodes;
+	if ( exists $nodes{documents} ) {
+		push @nodes, map { 'D:'.$_ } @{ $nodes{documents}};
+	} 
+	if ( exists $nodes{terms} ) {
+		push @nodes, map { 'T:'.$_ } @{ $nodes{terms}};
+	} 
+	
+	my %seen;
+	foreach my $n ( @nodes ) {
+		my @neighbors = $self->_neighbors( $n );
+		$seen{ $_ }++ foreach @neighbors;
+	}
+	return map { s/^[DT]://; $_ }
+		   grep { $seen{$_} == scalar @nodes } 
+		   keys %seen;
+}
+
 =item raw_search @NODES
 
 Given a list of nodes, returns a hash of nearest nodes with relevance values,
@@ -1139,6 +1165,68 @@ sub find_similar {
 }
 
 
+=item merge TYPE, GOOD, @BAD
+
+Combine all the nodes in @BAD into the node with identifier GOOD.
+First argument must be one of 'T' or 'D' to indicate term or
+document nodes.    Used to combine synonyms in the graph.
+
+=cut
+
+sub merge {
+	my ( $self, $type, $good, @bad ) = @_;
+	croak "must provide a type argument to merge"
+		unless defined $type;
+	croak "Invalid type argument $type to merge [must be one of (D,T)]" 
+		unless $type =~ /^[DT]/io;
+	
+	my $target  = $self->_nodeify( $type, $good );
+	my @sources = $self->_nodeify( $type, @bad );
+	
+	my $tnode = $self->{neighbors}{$target};
+	
+
+	foreach my $bad_node ( @sources ) {
+		#print "Examining $bad_node\n";
+		next if $bad_node eq $target;
+		my %neighbors = %{$self->{neighbors}{$bad_node}};
+		
+		foreach my $n ( keys %neighbors ) {
+			
+			#print "\t $target ($bad_node) neighbor $n\n";
+			if ( exists  $self->{neighbors}{$target}{$n} ) {
+				#print "\t\t$n has link to $bad_node\n";
+				# combine the local counts for the term members of the edge
+				my $curr_val = $tnode->{$n};
+				my $aug_val  = $self->{neighbors}{$bad_node}{$n};
+				my ($w1, $c1) = split m/,/, $curr_val;
+				my ($w2, $c2) = split m/,/, $aug_val;
+				my $new_count = $c1 + $c2;
+				$curr_val =~ s/,\d+$/,$new_count/;
+				$tnode->{$n} = $curr_val;
+				
+				
+			} else {
+				
+				die "sanity check failed for existence test"
+					if exists $self->{neighbors}{$target}{$n};
+				
+				my $val = $self->{neighbors}{$bad_node}{$n};
+				
+				#print "\tno existing link -- reassigning $target -- $n\n";
+				# reassign the current value of this edge
+			    
+				$self->{neighbors}{$n}{$target} = $val;
+				$self->{neighbors}{$target}{$n} = $val;
+			}
+			
+			delete $self->{neighbors}{$bad_node}{$n};
+			delete $self->{neighbors}{$n}{$bad_node};
+		}
+		delete $self->{neighbors}{$bad_node};
+	}
+}
+
 =item mixed_search @DOCS
 
 Given a hashref in the form:
@@ -1206,6 +1294,13 @@ sub _partition {
 	return ( $docs, $words );
 }
 
+# return a list of all neighbor nodes
+sub _neighbors {
+	my ( $self, $node ) = @_;
+	return unless exists $self->{neighbors}{$node};
+	return keys %{ $self->{neighbors}{$node} };
+}
+
 
 sub _nodeify {
 	my ( $self, $prefix, @list ) = @_;
@@ -1217,7 +1312,8 @@ sub _nodeify {
 			or defined $self->{'neighbors'}{$name};
 		push @nodes, $name;
 	}
-	return @nodes;
+	return unless @nodes;
+	( wantarray ?  @nodes : $nodes[0] );
 }
 
 
