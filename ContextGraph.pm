@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 
 =head1 NAME
@@ -148,6 +148,7 @@ sub _read_tdm {
 	my ( $self, $file ) = @_;
 	print "Loading TDM...\n" if $self->{'debug'};
 	
+	
 	open my $fh, $file or croak "Could not open $file: $!";
 	for ( 1..4 ){
 		my $skip = <$fh>;
@@ -165,6 +166,7 @@ sub _read_tdm {
 	}
 	$self->{'neighbors'} = \%neighbors;
 	print "Loaded.\n" if $self->{'debug'};
+	$self->{'from_TDM'} = 1;
 }
 
 
@@ -325,6 +327,10 @@ sub set_edge {
 	croak "No sink node" unless defined $sink;
 	croak "no value defined " unless defined $value;
 	
+	if ( $value > 1 ) {
+		warn "found edge exceeding unit weight\n";
+		$value = 1;
+	}
 	$self->{'neighbors'}{$source}{$sink} = $value;
 	$self->{'neighbors'}{$sink}{$source} = $value;
 	#print "\tsetting edge $sink, $source, $value\n";
