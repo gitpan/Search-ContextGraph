@@ -1,3 +1,13 @@
+0.06  7.19.2003
+
+- Merged in XS implementation from Schuyler Erle
+- Fixed global weighting bug where counts and weights were being computed in
+	the same loop
+- Updated test cases to reflect bugfixes
+- Added XS/pure Perl switch in constructor
+- Updated test cases to test both XS and pure Perl versions
+
+
 0.05  7.17.2003
 
 - Module now inherits from Storable.pm

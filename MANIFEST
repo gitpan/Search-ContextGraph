@@ -3,5 +3,15 @@ Makefile.PL
 MANIFEST
 CHANGES
 README
+LICENSE
 test.pl
 sample.tdm
+ContextGraph.bs
+const-c.inc
+const-xs.inc
+ppport.h
+typemap
+cns.c
+cns.h
+ContextGraph.xs
+bench.pl
