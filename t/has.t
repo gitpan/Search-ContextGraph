@@ -1,8 +1,6 @@
 #!/usr/bin/perl -w
 
-# update.t - make sure that document updates work like we
-# expect them to.
-
+# has.t - check to see whether the document and term existence tests work
 
 use Test::More qw/no_plan/;
 use blib;

@@ -1,4 +1,13 @@
-0.09 2.23.2004
+0.10  3.03.2004
+
+- Made adding content-free document a fatal error
+- Added simple_search method
+- Added load_from_dir constructor
+- Added dependency on File::Find
+- Normalize all terms to lower case
+
+
+0.09  2.23.2004
 
 - It's now possible to add, delete, and update individual docs
 - Some regrettable but correct interface changes

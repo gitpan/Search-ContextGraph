@@ -20,4 +20,14 @@ t/dump.t
 t/has.t
 t/invariance.t
 t/rebalancing.t
+t/simple_search.t
 t/update.t
+t/data/1
+t/data/3
+t/data/5
+t/data/nest
+t/data/nest/nest
+t/data/nest/nest/6
+t/data/subdir
+t/data/subdir/2
+t/data/subdir/4

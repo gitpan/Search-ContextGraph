@@ -11,7 +11,7 @@ my %docs = (
 );
 
 for my $XS ( 0..1 ) {
-	#last if $XS;
+	last if $XS;
 	
 	my $cg = Search::ContextGraph->new( xs => $XS);
 	
