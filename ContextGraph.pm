@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 
 =head1 NAME
@@ -15,22 +15,21 @@ Search::ContextGraph - Run searches using a contextual network graph
 
   use Search::ContextGraph;
   
-  my %docs = ( 'First Document' => { 'elephant' => 2, 'snake' => 1 }
-  			   'Other Document' => { 'snake' => 1, 'constrictor' => 1 }
-  			   ...
-  			  );
+  my %docs = (
+    'First Document' => { 'elephant' => 2, 'snake' => 1 },
+    'Second Document' => { 'camel' => 1, 'pony' => 1 },
+    'Third Document' => { 'snake' => 2, 'constrictor' => 1 },
+  );
   
   my $cg = Search::ContextGraph->new();
   $cg->add_documents( %docs );
  
   my $results = $cg->search('snake');
   
-  foreach my $k ( keys %{ $results } ) {
-  		print "$k had relevance ", $results->{$k}, "\n";
+  foreach my $k (sort { $results->{$b} <=> $results->{$a} }
+      keys %{ $results } ) {
+    print "$k had relevance ", $results->{$k}, "\n";
   }
-  
-  	
-  
 
 =head1 DESCRIPTION
 
@@ -60,7 +59,7 @@ Object constructor.
 sub new {
 	my ( $class, %params) = @_;
 	bless 
-		{ debug => 1,
+		{ debug => 0,
 		  START_ENERGY => 100,
 		  ACTIVATE_THRESHOLD => 1,
 		  COLLECT_THRESHOLD => 1,
@@ -255,7 +254,7 @@ sub add_documents {
 			# so it falls between zero and one
 			
 			my $t_weight = ( $g_weight * $l_weight ) / $max_seen;
-			print $t_weight, "\n";
+			print $t_weight, "\n" if $self->{debug};
 			$self->set_edge( $dindex, $tindex, $t_weight);
 		}
 		$doc_index++;
@@ -263,7 +262,7 @@ sub add_documents {
 	
 	
 	foreach my $single  ( keys %{ $self->{'singletons'} } ) {
-		print $single, ' ', $self->{'singletons'}->{$single}, "\n";
+		print $single, ' ', $self->{'singletons'}->{$single}, "\n" if $self->{debug};
 	}
 	
 	$self->{'doc_lookup'} = \%doc_lookup;
@@ -301,7 +300,7 @@ sub search {
 			
 			my $tnode = $self->{'term_lookup'}{$word}
 				or carp "Word $word not found\n";
-			next unless $term;
+			next unless $word;
 			$self->_energize( $tnode, $self->{'START_ENERGY'} );
 		}
 	}
@@ -406,13 +405,18 @@ sub _energize {
 
 =back
 
-=head1 AUTHOR
+=head1 AUTHOR 
 
 Maciej Ceglowski E<lt>maciej@ceglowski.comE<gt>
 
+=head1 CONTRIBUTORS 
+
+Ken Williams
+Leon Brocard
+ 
 =head1 COPYRIGHT AND LICENSE
 
-(C) 2003 Maciej Ceglowski, John Cuadrado, NITLE
+(C) 2003 Maciej Ceglowski
 
 This program may be distributed under the same terms as Perl itself.
 

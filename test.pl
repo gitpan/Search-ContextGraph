@@ -1,31 +1,24 @@
-# Before `make install' is performed this script should be runnable with
-# `make test'. After `make install' it should work as `perl test.pl'
+#!/usr/bin/perl -w
 
-#########################
-
-my $ENERGY = 10000;
-# change 'tests => 1' to 'tests => last_test_to_print';
-use Carp;
 use Search::ContextGraph;
+use Test::More tests => 6;
 
-my $file = shift or die "Please provide a filename";
+my %docs = (
+  'First Document' => { 'elephant' => 2, 'snake' => 1 },
+  'Second Document' => { 'camel' => 1, 'pony' => 1 },
+  'Third Document' => { 'snake' => 2, 'constrictor' => 1 },
+);
 
-my $c = Search::ContextGraph->new();
+my $cg = Search::ContextGraph->new();
+ok($cg, "have Search::ContextGraph object");
+$cg->add_documents( %docs );
 
-$c->read_tdm( $file );
-#$c->energize ( "t31", $ENERGY );
-while (<>) {
-	chomp;
-	$c->energize( $_, $ENERGY) or print "Node not found\n";
-	my $energy = $c->collect();
-	print join "\n", map { "$_ \t ".$energy->{$_} }
-		 sort { $energy->{$b} <=> $energy->{$a} } keys %{$energy};
-	print "\n";
-	$c->clear();
-}
+my $results = $cg->search('snake');
 
-#########################
+is(scalar(keys(%$results)), 2, "only two matches");
+ok($results->{"First Document"}, "contains first document");
+ok($results->{"Third Document"}, "contains third document");
 
-# Insert your test code below, the Test module is use()ed here so read
-# its man page ( perldoc Test ) for help writing this test script.
-
+is(sprintf("%2.2f", $results->{"First Document"}), 10.94, "relevance for first right");
+is(sprintf("%2.2f", $results->{"Third Document"}), 18.53, "relevance for third doc right");
+ 
