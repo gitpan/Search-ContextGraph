@@ -1,19 +1,40 @@
+0.05  7.17.2003
+
+- Module now inherits from Storable.pm
+- Added "find similar" method for document similarity search
+- Added "mixed_search" method for term + document search;
+- Edges are now normalized around each document
+- Renamed TDM load method to "load_from_tdm"
+- Singletons now inhabit the graph, instead of living in a lookup table
+- Special check prevents bounce-back from singletons
+- Many more test cases
+- Two levels of debugging output
+- Added credits for John Cuadrado and Scott Preece	
+
+
 0.04  7.14.2003
-Applied patches from Leon Brocard
- * actual test cases
- * fixed typo that broke module
- * cleanup of debugging flag and output
- * Dependency on Test::More
+
+- Applied patches from Leon Brocard
+	 - actual test cases
+	 - fixed typo that broke module
+	 - cleanup of debugging flag and output
+	 - added dependency on Test::More
+
 
 0.03  7.11.2003 
-Added check to make sure no edges can have greater than unit weight
+
+- Added check to make sure no edges can have greater than unit weight
+
 
 0.02  7.11.2003
-Added interface for just adding document titles + word lists, and having the sucker
-build the search engine for you.   Earlier TDM format universally reviled by 
-Perl community...
-Added some POD and minor code patches from Ken Williams
+
+- Added interface for just adding document titles + word lists, and having the sucker
+  build the search engine for you.   Earlier TDM format universally reviled by 
+  Perl community...
+- Added some POD and minor code patches from Ken Williams
+
 
 0.01 6.01.2003
-Created. 
+
+- And Maciej said, "Let there be Search::ContextGraph"!
 

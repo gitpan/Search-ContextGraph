@@ -1,7 +1,8 @@
 #!/usr/bin/perl -w
 
 use Search::ContextGraph;
-use Test::More tests => 6;
+use Test::More  'no_plan';
+use Data::Dumper;
 
 my %docs = (
   'First Document' => { 'elephant' => 2, 'snake' => 1 },
@@ -13,12 +14,79 @@ my $cg = Search::ContextGraph->new();
 ok($cg, "have Search::ContextGraph object");
 $cg->add_documents( %docs );
 
-my $results = $cg->search('snake');
+my ($docs, $words ) = $cg->search('snake');
 
-is(scalar(keys(%$results)), 2, "only two matches");
-ok($results->{"First Document"}, "contains first document");
-ok($results->{"Third Document"}, "contains third document");
+is(scalar(keys(%$docs)), 2, "only two matches");
 
-is(sprintf("%2.2f", $results->{"First Document"}), 10.94, "relevance for first right");
-is(sprintf("%2.2f", $results->{"Third Document"}), 18.53, "relevance for third doc right");
+
+ok($docs->{"First Document"}, "contains first document");
+ok($docs->{"Third Document"}, "contains third document");
+
+is(sprintf("%2.2f", $docs->{"First Document"}), 20.52, 'correct relevance on search doc #1');
+is(sprintf("%2.2f", $docs->{"Third Document"}), 29.36, 'correct relevance on search doc #3');
  
+
+( $docs, $words ) = $cg->search('pony'); 
+
+#Test search starting at singleton node
+is(sprintf("%2.2f", $docs->{"Second Document"}), '90.00', "search starting at singleton");
+
+# Try adding a duplicate title
+eval{ $cg->add_documents( %docs ); }; 
+ok(  $@ =~ /^Tried to add document with duplicate title/,
+	 "complained about duplicate title");
+
+my %new_docs = (	
+	'Fourth Document' => { 'elephant' => 1, 'fox' => 2, 'boa' => 1 },
+	'Fifth Document' => { 'bull' => 1, 'eagle' => 1 }
+	);
+	
+eval{ $cg->add_documents( %new_docs ) };
+ok( !length $@, "able to add more documents" );
+is ( $cg->doc_count(), 5, "document count is correct" );
+
+
+# Check that the word count is right
+my @words = $cg->dump_words();
+is ( scalar @words, 9, "word count is correct" );
+my $flat = join '', sort @words;
+is ( $flat, 'boabullcamelconstrictoreagleelephantfoxponysnake', "word list is correct" );
+
+( $docs, $words ) = $cg->search('pony');
+is(sprintf("%2.2f", $docs->{"Second Document"}), '90.00', "singleton search did not change");
+
+my $raw = $cg->raw_search('T:pony');
+is(sprintf("%2.2f", $raw->{"D:Second Document"}), '90.00', "raw search gives same result");
+
+
+( $docs, $words ) = $cg->search('snake');
+is(sprintf("%2.2f", $docs->{"First Document"}), 22.35, 'result changed for non-singleton search');
+
+( $docs, $words ) = $cg->find_similar('First Document');
+is(sprintf("%2.2f", $docs->{"First Document"}), '114.30', 'find similar search correct');
+is(sprintf("%2.2f", $docs->{"Fourth Document"}), '3.70', 'find similar search correct');
+
+
+# Try storing the sucker
+my $path = "Search::ContextGraph::Test::Stored";
+eval { $cg->store( $path ) };
+ok( !length $@, "able to store object to file" );
+
+my $x = Search::ContextGraph->retrieve( $path );
+ok( UNIVERSAL::isa( $x, 'Search::ContextGraph'), "reload object from stored file" );
+
+#cleanup
+eval { unlink $path; };
+ok( !length $@, "remove stored file" );
+
+my $y = Search::ContextGraph->new();
+$path = "sample.tdm";
+eval{ $y->load_from_tdm( $path ); };
+ok( !length $@, "able to load TDM file $@" );
+is( $y->doc_count(), 177, "correct document count" );
+is( $y->term_count(), 2036, "correct term count" );
+
+
+($docs, $words) = $y->mixed_search( { terms => [ 111, 109, 23 ], docs => [33,21,12] });
+is(sprintf("%2.2f", $docs->{163}), 6.15, "mixed search got right doc value");
+is(sprintf("%2.2f", $words->{248}), 0.58, "mixed search got right term value");

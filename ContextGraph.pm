@@ -3,8 +3,10 @@ package Search::ContextGraph;
 use strict;
 use warnings;
 use Carp;
+use base "Storable";
 
-our $VERSION = '0.04';
+
+our $VERSION = '0.05';
 
 
 =head1 NAME
@@ -14,22 +16,41 @@ Search::ContextGraph - Run searches using a contextual network graph
 =head1 SYNOPSIS
 
   use Search::ContextGraph;
-  
+
   my %docs = (
-    'First Document' => { 'elephant' => 2, 'snake' => 1 },
+    'First Document'  => { 'elephant' => 2, 'snake' => 1 },
     'Second Document' => { 'camel' => 1, 'pony' => 1 },
-    'Third Document' => { 'snake' => 2, 'constrictor' => 1 },
+    'Third Document'  => { 'snake' => 2, 'constrictor' => 1 },
   );
-  
+
   my $cg = Search::ContextGraph->new();
   $cg->add_documents( %docs );
- 
-  my $results = $cg->search('snake');
-  
-  foreach my $k (sort { $results->{$b} <=> $results->{$a} }
-      keys %{ $results } ) {
-    print "$k had relevance ", $results->{$k}, "\n";
+
+  # Regular word search
+  my ( $docs, $words ) = $cg->search('snake');
+
+  # Document similarity search
+  my ( $docs, $words ) = $cg->find_similar('First Document');
+
+  # Search on a little bit of both...
+  my ( $docs, $words ) = 
+    $cg->mixed_search( { docs  => [ 'First Document' ],
+                         terms => [ 'snake', 'pony' ]
+                     );
+
+  # Print out result set of returned documents
+  foreach my $k ( sort { $docs->{$b} <=> $docs->{$a} }
+      keys %{ $docs } ) {
+      print "Document $k had relevance ", $docs->{$k}, "\n";
   }
+
+  # Store the graph for future generations
+  $cg->store( "filename" );
+
+  # Reload it
+  my $new = Search::ContextGraph->retrieve( "filename" );
+
+
 
 =head1 DESCRIPTION
 
@@ -40,7 +61,7 @@ a document, we create an edge between the appropriate term and document node.
 Searches take place by spreading energy from a query node along the edges of 
 the graph according to some simple rules.  All result nodes exceeding a threshold 
 T are returned.   You can read a full description of this algorithm
-at L<http://www.nitle.org/papers/Contextual_Network_Graph.pdf>.
+at L<http://www.nitle.org/papers/Contextual_Network_Graphs.pdf>.
 
 The search engine gives expanded recall (relevant results even when there is no
 keyword match) without incurring the kind of computational and patent issues
@@ -63,20 +84,33 @@ sub new {
 		  START_ENERGY => 100,
 		  ACTIVATE_THRESHOLD => 1,
 		  COLLECT_THRESHOLD => 1,
-	      %params 
+	      %params,
+	      neighbors => {}, 
+
 		}, 
 	$class;
 }
-	
-=item [get|set]_threshold
 
-Accessor for threshold value.  This value determines how far energy can spread
-in the graph
+=item [get|set]_activate_threshold
+
+Accessor for node activation threshold value.  This value determines how far 
+energy can spread in the graph
 
 =cut
 
-sub get_threshold { $_[0]->{'threshold'} }
-sub set_threshold {	$_[0]->{'threshold'} = $_[1] }
+sub get_activate_threshold {    $_[0]->{'ACTIVATE_THRESHOLD'} }
+sub set_activate_threshold {	$_[0]->{'ACTIVATE_THRESHOLD'} = $_[1] }
+
+
+=item [get|set]_collect_threshold
+
+Accessor for collection threshold value.  This determines how much energy a
+node must have to make it into the result set.
+
+=cut
+
+sub get_collect_threshold {  $_[0]->{'COLLECT_THRESHOLD'} }
+sub set_collect_threshold {	 $_[0]->{'COLLECT_THRESHOLD'} = $_[1] }
 
 
 =item [get|set]_initial_energy
@@ -86,11 +120,11 @@ the larger the result set
 
 =cut
 
-sub get_initial_energy { $_[0]->{'threshold'} }
-sub set_initial_energy { $_[0]->{'energy'} = $_[1] }
+sub get_initial_energy { $_[0]->{'START_ENERGY'} }
+sub set_initial_energy { $_[0]->{'START_ENERGY'} = $_[1] }
 
 
-=item load TDM_FILE [, LM_FILE]
+=item load_from_tdm TDM_FILE [, LM_FILE]
 
 Opens and loads a term-document matrix (TDM) file to initialize the graph.
 Optionally also opens and loads a document link matrix (DLM) file of document-to-document
@@ -100,31 +134,36 @@ For notes on these file formats, see the README file
 Note that document-document links are NOT YET IMPLEMENTED.
 
 =cut
-sub load {
+
+sub load_from_tdm {
 	my  ( $self, $file ) = @_;
 	croak "TDM file $file does not exist" unless -f $file;
 	return if $self->{'loaded'};
-	$self->_read_tdm();
+	$self->_read_tdm( $file );
 	$self->{'loaded'} = 1;
 }
+
+
 
 
 =item raw_search @NODES
 
 Given a list of nodes, returns a hash of nearest nodes with relevance values,
-in the format NODE => RELEVANCE, for all nodes above the threshold value
+in the format NODE => RELEVANCE, for all nodes above the threshold value. 
+(You probably want one of search, find_similar, or mixed_search instead).
 
 =cut
 
 sub raw_search {
-	my ( $self, @query );
-	
+	my ( $self, @query ) = @_;
+
+	$self->_clear();
 	foreach ( @query ) {
-		$self->energize( $_ );
+		$self->_energize( $_, $self->{'START_ENERGY'} );
 	}
 	my $results_ref = $self->_collect();
-	$self->_reset();
-	return %{ $results_ref };
+
+	return $results_ref;
 }
 
 =item set_debug_mode
@@ -136,18 +175,16 @@ Turns verbose comments on if given a true value as its argument
 sub set_debug_mode { $_[0]->{'debug'} = $_[1] }
 
 
-=item _read_tdm FILE
 
-Opens and reads a term-document matrix (TDM) file.  The format for this file
-is described in the README
+# Opens and reads a term-document matrix (TDM) file.  The format for this file
+# is described in the README
 
-=cut
 
 sub _read_tdm {
 	my ( $self, $file ) = @_;
 	print "Loading TDM...\n" if $self->{'debug'};
-	
-	
+
+
 	open my $fh, $file or croak "Could not open $file: $!";
 	for ( 1..4 ){
 		my $skip = <$fh>;
@@ -158,14 +195,15 @@ sub _read_tdm {
 		chomp;
 		my ( $count, %vals ) = split;
 		while ( my ( $n, $v ) = each %vals ) {
-			$neighbors{"d$doc"}{"t$n"} = $v;
-			$neighbors{"t$n"}{"d$doc"} = $v;
+			$neighbors{"D:$doc"}{"T:$n"} = $v;
+			$neighbors{"T:$n"}{"D:$doc"} = $v;
 		}
 		$doc++;
 	}
 	$self->{'neighbors'} = \%neighbors;
 	print "Loaded.\n" if $self->{'debug'};
 	$self->{'from_TDM'} = 1;
+	$self->{'doc_count'} = $doc;
 }
 
 
@@ -176,147 +214,192 @@ TITLE => WORDHASH, where WORDHASH is a reference to a hash of terms
 and occurence counts.  In other words,
 
 	TITLE => { WORD1 => COUNT1, WORD2 => COUNT2 ... }
-	
+
 
 =cut
 
 sub add_documents {
 
-	my ( $self, %docs ) = @_;
-	
-	my %doc_lookup;
-	my %term_lookup;
-	
-	my %doc_in;
-	my %seen_words;
-	my %doc_map;
-	my %g_weights;  # global term weights
-	
-	my $doc_index = 0;
-	my $term_index = 0;
-	
-	my @doc_list = keys %docs; # Make sure these remain in same order
-	
-	my $num_docs = scalar @doc_list;
-	
-	
-	# First, parse the vocabulary out
+	my ( $self, %incoming_docs ) = @_;
+
+	my @doc_list = keys %incoming_docs; # Make sure these remain in same order
+
+	# Add word and document nodes to the graph
 	foreach my $doc ( @doc_list ) {
-		$doc_lookup{ 'd'.$doc_index } = $doc;
-		foreach my $term ( keys %{ $docs{$doc} } ) {
-			$seen_words{$term}++;
-			$doc_map{$term} = "d".$doc_index;
-		}
-		$doc_index++;
+		my $dnode = 'D:'.$doc;
+		croak "Tried to add document with duplicate title: \"$doc\"\n"
+			if exists( $self->{'neighbors'}{$dnode} );
+
 	}
-	
-	
-	
-	#Next, figure out who the singletons are,
-	#and keep a mapping
-	
-	my %singletons;
-	$term_index = 0;
-	my $max_seen = 0;
-	foreach my $seen ( keys %seen_words ) {
-		if ( $seen_words{$seen} == 1 ) {
-			$singletons{$seen} = $doc_map{$seen};
-			delete $seen_words{$seen};
-		} else {
-			$term_lookup{$seen} = 't'.$term_index++;
-			$max_seen = $seen_words{$seen} if 
-				$seen_words{$seen} > $max_seen;
-		} 
-	}
-	
-	$self->{'singletons'} = \%singletons;
-	$doc_index = 0;
-	
-	
-	
-	
+
+
+	$self->{'doc_count'} += scalar @doc_list;
+
+
 	# Set edges in the graph
 	foreach my $doc ( @doc_list ) {
 		# Every word in this document
-		
-		foreach my $term ( keys %{ $docs{$doc} } ) {
-			next unless $seen_words{$term};
-			
-			my $tindex = $term_lookup{$term};
-			my $dindex = 'd'.$doc_index;
-			my $lcount = $docs{$doc}{$term};
+		my @edges;
+		my $dnode = 'D:'.$doc;
+
+		foreach my $term ( keys %{ $incoming_docs{$doc} } ) {		
+
+			my $tnode = 'T:'.$term;
+
+			my $lcount = $incoming_docs{$doc}{$term};
 			my $l_weight = log( $lcount ) + 1;
-		
+
 			# We calculate global weight in the loop to conserve memory
-			my $g_weight = log( $num_docs / $seen_words{$term} );
-			
-			# edge weight is local weight * global weight, normalized 
-			# so it falls between zero and one
-			
-			my $t_weight = ( $g_weight * $l_weight ) / $max_seen;
-			print $t_weight, "\n" if $self->{debug};
-			$self->set_edge( $dindex, $tindex, $t_weight);
+			my $global_count = $self->degree( $tnode ) + 1;
+			my $g_weight = log( $self->{'doc_count'} /  $global_count ) + 1;
+
+			# edge weight is local weight * global weight
+			my $t_weight = ( $g_weight * $l_weight );
+			print "Calculated edge $dnode -> $tnode with weight $t_weight", "\n"
+				 if $self->{debug};
+			push @edges, [ $dnode, $tnode, $t_weight ];
 		}
-		$doc_index++;
+
+		# Normalize the edges around each document so they add up to
+		# unit weight
+		my $sum;
+		$sum += $_->[2] foreach @edges;
+		$_->[2]/= $sum foreach @edges;
+
+		foreach my $e ( @edges ) {
+			print "final weight is ", $e->[2], "\n" if $self->{debug};
+			$self->set_edge( @{$e} );
+		}
 	}
-	
-	
-	foreach my $single  ( keys %{ $self->{'singletons'} } ) {
-		print $single, ' ', $self->{'singletons'}->{$single}, "\n" if $self->{debug};
-	}
-	
-	$self->{'doc_lookup'} = \%doc_lookup;
-	$self->{'term_lookup'} = \%term_lookup;
+
+
 }
-	
-	
-	
+
+
+sub doc_count {
+	$_[0]->{'doc_count'};
+}
+
+sub term_count {
+	scalar $_[0]->dump_words();
+}
+
+sub retrieve {
+	my ( $self, $file ) = @_;
+	Storable::retrieve( $file );
+}
+
+
+sub dump_words {
+
+	my ( $self ) = @_;
+	my %words;
+	foreach my $n ( keys %{ $self->{'neighbors'} } ) {
+		$words{$n}++ if $n =~ s/^T://o;
+	}
+
+	return  keys %words;
+}
+
 =item search @QUERY
 
 Searches the graph for all of the words in @QUERY.   No support yet for 
-document similarity searches, but it's coming.  Returns a hashref
-to a hash of document titles and relevance values.
+document similarity searches, but it's coming.  Returns a pair of hashrefs:
+the first a reference to a hash of docs and relevance values, the second to 
+a hash of words and relevance values.
 
 =cut
-	
+
 sub search {
-	my ( $self, @query ) = @_;
-	
-	
-	# First, check keyword search
-	
-	$self->_clear();
-	foreach my $word ( @query ) {
-		print "Searching $word \n" if $self->{'debug'};
-		
-		# Check to see if this is a singleton word
-		
-		if ( exists ( $self->{'singletons'}{$word} )){
-			print "\t$word  is a singleton\n" if $self->{'debug'};
-			my $dnode = $self->{'singletons'}{$word};
-			$self->_energize( $dnode, $self->{'START_ENERGY'});
-		
-		} else {
-			
-			my $tnode = $self->{'term_lookup'}{$word}
-				or carp "Word $word not found\n";
-			next unless $word;
-			$self->_energize( $tnode, $self->{'START_ENERGY'} );
-		}
-	}
-	
-	
-	my $e = $self->{'energy'};
-	my %result;
+	my ( $self, @query ) = @_;	
+	my @nodes = $self->_nodeify( 'T', @query );
+	my $results = $self->raw_search( @nodes );	
+	my ($docs, $words) = _partition( $results );
+	return ( $docs, $words);
+}
+
+
+=item find_similar @DOCS
+
+Given an array of document identifiers, returns a pair of hashrefs.
+First hashref is to a hash of docs and relevance values, second
+is to a hash of words and relevance values.
+
+=cut
+
+sub find_similar {
+	my ( $self, @docs ) = @_;
+	my @nodes = $self->_nodeify( 'D', @docs );
+	my $results = $self->raw_search( @nodes );
+	my ($docs, $words) = _partition( $results );
+	return ( $docs, $words);
+}
+
+
+=item mixed_search @DOCS
+
+Given a hashref in the form:
+    { docs => [ 'Title 1', 'Title 2' ],
+      terms => ['buffalo', 'fox' ], }
+     }
+Runs a combined search on the terms and documents provided, and
+returns a pair of hashrefs.  The first hashref is to a hash of docs
+and relevance values, second is to a hash of words and relevance values.
+
+=cut
+
+sub mixed_search {
+	my ( $self, $incoming ) = @_;
+
+	croak "must provide hash ref to mixed_search method"
+		unless defined $incoming &&
+		ref( $incoming ) &&
+		ref( $incoming ) eq 'HASH';
+
+	my $tref = $incoming->{'terms'} || [];
+	my $dref = $incoming->{'docs'}  || [];
+
+	my @dnodes = $self->_nodeify( 'D', @{$dref} );
+	my @tnodes = $self->_nodeify( 'T', @{$tref} );
+
+	my $results = $self->raw_search( @dnodes, @tnodes );
+	my ($docs, $words) = _partition( $results );
+	return ( $docs, $words);
+}
+
+
+
+sub _partition {
+	my ( $e ) = @_;
+	my ( $docs, $words );
 	foreach my $k ( sort { $e->{$b} <=> $e->{$a} }
 					keys %{ $e } ) {
-		
-		next if $k =~ /^t/;   # skip term nodes
-		my $doc = $self->{'doc_lookup'}->{$k};
-		$result{$doc} = $e->{$k};
+
+		(my $name = $k ) =~ s/^[DT]://o;
+		$k =~ /^D:/  ? 
+			$docs->{$name} = $e->{$k}  :
+			$words->{$name} = $e->{$k} ;
 	}
-	return \%result;
-	
+	return ( $docs, $words );
+}
+
+sub _nodeify {
+	my ( $self, $prefix, @list ) = @_;
+	my @nodes;
+	foreach my $item ( @list ) {
+		my $name = $prefix.':'.$item;
+		croak "Node $name not found"
+			unless defined $self->{'neighbors'}{$name};
+		push @nodes, $name;
+	}
+	return @nodes;
+}
+
+sub degree {
+	my ($self, $node ) = @_;
+	if ( exists ( $self->{'neighbors'}{$node} ) ) {
+		return scalar keys %{ $self->{'neighbors'}{$node} };
+	}
 }
 
 
@@ -325,14 +408,12 @@ sub set_edge {
 	croak "No source node" unless defined $source;
 	croak "No sink node" unless defined $sink;
 	croak "no value defined " unless defined $value;
-	
+
 	if ( $value > 1 ) {
-		warn "found edge exceeding unit weight\n";
-		$value = 1;
+		croak "found edge exceeding unit weight\n";
 	}
 	$self->{'neighbors'}{$source}{$sink} = $value;
 	$self->{'neighbors'}{$sink}{$source} = $value;
-	#print "\tsetting edge $sink, $source, $value\n";
 }
 
 
@@ -350,19 +431,17 @@ sub _collect {
 	return $self->{'energy'};
 }
 
-=item _energize NODE, ENERGY
+ #  Assign a starting energy ENERGY to NODE, and recursively distribute  the 
+ #  energy to neighbor nodes.   Singleton nodes get special treatment 
 
-Private method.   Assigns a starting energy ENERGY to NODE, and recursively distributes the energy to neighbor nodes.    
-
-=cut
 
 sub _energize {
 
 	my ( $self, $node, $energy ) = @_;
-	
-	
+
+
 	return unless defined $self->{'neighbors'}{$node};
-	
+
 	$self->{'energy'}->{$node} += $energy;
 	$self->{'indent'}++;
 
@@ -372,16 +451,39 @@ sub _energize {
 	}
 	#sleep 1;
 	my $degree = scalar keys %{ $self->{'neighbors'}->{$node} };
-	
+
 	if ( defined $self->{'debug'} && $self->{'debug'} > 1) {
 		print  ' ' x $self->{'indent'};
 		print "Node $node has $degree neighbors\n" if $self->{'debug'}	
 	}
-	
+
 	croak "Fatal error: encountered node of degree zero" unless $degree;
 	my $subenergy = $energy / $degree;
-	print "\tsubenergy is $subenergy\n" if $self->{'debug'} > 1;
-	if ( $subenergy > $self->{ACTIVATE_THRESHOLD} ) {
+
+
+	# At singleton nodes (words that appear in only one document, for example)
+	# Don't spread energy any further.  This avoids a "reflection" back and
+	# forth from singleton nodes to their neighbors.
+
+	if ( $degree == 1 and  $energy < $self->{'START_ENERGY'} ) {
+
+		#do nothing
+
+
+	# If the search starts on a singleton, we want to make sure the energy
+	# gets passed along to the neighbor node, no matter how puny the edge weight
+	# connecting the singleton term to its neighbor.  We diminish it a little bit,
+	# just in case the neighbor is also a degree 1 node - otherwise the
+	# energy would  bounce back and forth forever
+
+	} elsif ( $degree == 1 ) {
+		my ($neighbor) = keys %{ $self->{'neighbors'}{$node} };
+		$self->_energize( $neighbor, $self->{'START_ENERGY'} * .9 );
+
+
+	# 
+	} elsif ( $subenergy > $self->{ACTIVATE_THRESHOLD} ) {
+		print "\tsubenergy is $subenergy\n" if $self->{'debug'} > 1;
 		foreach my $neighbor ( keys %{ $self->{'neighbors'}{$node} } ) {
 			my $edge = $self->{'neighbors'}{$node}{$neighbor};
 			my $weighted_energy = $subenergy * $edge;
@@ -393,6 +495,15 @@ sub _energize {
 }
 
 
+sub get_neighbors {
+	my ( $self, $node ) = @_;
+	my @list;
+	foreach my $n ( keys %{ $self->{'neighbors'}{$node} } ){
+		push @list, [$n, $self->{'neighbors'}{$node}{$n}];
+	}
+	return @list;
+}
+
 1;
 
 =back
@@ -403,17 +514,25 @@ sub _energize {
 
 =item Document-document links are not yet implemented
 
+=item No way to delete nodes once they're in the graph
+
+=item No way to break edges once they're in the graph
+
 =back
 
 =head1 AUTHOR 
 
 Maciej Ceglowski E<lt>maciej@ceglowski.comE<gt>
 
+The technique used here was developed in 2003 by John Cuadrado, and later
+found to have antecedents in the spreading activation approach described 
+in a 1981 doctoral dissertation by Scott Preece.
+
 =head1 CONTRIBUTORS 
 
 Ken Williams
 Leon Brocard
- 
+
 =head1 COPYRIGHT AND LICENSE
 
 (C) 2003 Maciej Ceglowski
