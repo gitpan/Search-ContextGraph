@@ -1,6 +1,7 @@
 ContextGraph.pm
 Makefile.PL
 MANIFEST
+CHANGES
 README
 test.pl
 sample.tdm

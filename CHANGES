@@ -1,0 +1,13 @@
+0.02  7.11.2003
+
+Added interface for just adding document titles + word lists, and having the sucker
+build the search engine for you.   Earlier TDM format universally reviled by 
+Perl community...
+
+Added some POD and minor code patches from Ken Williams
+
+
+0.01 6.01.2003
+
+Created. 
+

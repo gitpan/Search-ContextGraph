@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 
 =head1 NAME
@@ -15,10 +15,21 @@ Search::ContextGraph - Run searches using a contextual network graph
 
   use Search::ContextGraph;
   
-  my $cg = Search::ContextGraph->new();
-  $cg->load( 'file.tdm' );
+  my %docs = ( 'First Document' => { 'elephant' => 2, 'snake' => 1 }
+  			   'Other Document' => { 'snake' => 1, 'constrictor' => 1 }
+  			   ...
+  			  );
   
-  my %results = $cg->search( 'd1', 't34', 't12' );
+  my $cg = Search::ContextGraph->new();
+  $cg->add_documents( %docs );
+ 
+  my $results = $cg->search('snake');
+  
+  foreach my $k ( keys %{ $results } ) {
+  		print "$k had relevance ", $results->{$k}, "\n";
+  }
+  
+  	
   
 
 =head1 DESCRIPTION
@@ -28,12 +39,13 @@ algorithm represents the collection as a set of term and document nodes,
 connected to one another based on a co-occurrence matrix.  If a word occurs in
 a document, we create an edge between the appropriate term and document node.
 Searches take place by spreading energy from a query node along the edges of 
-the graph according to some simple rules.  All result nodes exceeding a threshold T are returned.   You can read a full description of this algorithm
+the graph according to some simple rules.  All result nodes exceeding a threshold 
+T are returned.   You can read a full description of this algorithm
 at L<http://www.nitle.org/papers/Contextual_Network_Graph.pdf>.
 
 The search engine gives expanded recall (relevant results even when there is no
 keyword match) without incurring the kind of computational and patent issues
-inflicted by latent semantic indexing (LSI).
+posed by latent semantic indexing (LSI).
 
 =head1 METHODS
 
@@ -41,32 +53,17 @@ inflicted by latent semantic indexing (LSI).
 
 =item new %PARAMS
 
-Object constructor.   Parameters include:
-
-=over
-
-=item debug 
-
-Turns verbose mode on when true
-
-=item energy
-
-initial starting energy, default 10000
-
-=item threshold
-
-Cutoff value for propagating energy to neighbor nodes
-
-=back
+Object constructor.  
 
 =cut
 
 sub new {
 	my ( $class, %params) = @_;
 	bless 
-		{ debug => 0,
-		  initial_energy => 10000,
-		  threshold => 1,
+		{ debug => 1,
+		  START_ENERGY => 100,
+		  ACTIVATE_THRESHOLD => 1,
+		  COLLECT_THRESHOLD => 1,
 	      %params 
 		}, 
 	$class;
@@ -90,8 +87,8 @@ the larger the result set
 
 =cut
 
-sub get_initial_energy { $_[0]->{'initial_energy'} }
-sub set_initial_energy { $_[0]->{'initial_energy'} = $_[1] }
+sub get_initial_energy { $_[0]->{'threshold'} }
+sub set_initial_energy { $_[0]->{'energy'} = $_[1] }
 
 
 =item load TDM_FILE [, LM_FILE]
@@ -108,28 +105,27 @@ sub load {
 	my  ( $self, $file ) = @_;
 	croak "TDM file $file does not exist" unless -f $file;
 	return if $self->{'loaded'};
-	$self->_read_tdm( $file );
+	$self->_read_tdm();
 	$self->{'loaded'} = 1;
 }
 
 
-=item search @NODES
+=item raw_search @NODES
 
 Given a list of nodes, returns a hash of nearest nodes with relevance values,
-in the format NODE => RELEVANCE, for all nodes above the threshold value.  Term nodes are prefixed by 't', document nodes are prefixed by 'd'.  It's your job
-to keep some kind of node index to value map handy.
+in the format NODE => RELEVANCE, for all nodes above the threshold value
 
 =cut
 
-sub search {
-	my ( $self, @query ) = @_;
+sub raw_search {
+	my ( $self, @query );
 	
 	foreach ( @query ) {
-		$self->_energize( $_, $self->{'initial_energy'} );
+		$self->energize( $_ );
 	}
-	my $results_href = $self->_collect();
-	$self->_reset() or croak "Unable to clear graph energies";
-	return $results_href;
+	my $results_ref = $self->_collect();
+	$self->_reset();
+	return %{ $results_ref };
 }
 
 =item set_debug_mode
@@ -172,12 +168,174 @@ sub _read_tdm {
 }
 
 
+=item add_documents %DOCS
+
+Load up the search engine with documents in the form
+TITLE => WORDHASH, where WORDHASH is a reference to a hash of terms
+and occurence counts.  In other words,
+
+	TITLE => { WORD1 => COUNT1, WORD2 => COUNT2 ... }
+	
+
+=cut
+
+sub add_documents {
+
+	my ( $self, %docs ) = @_;
+	
+	my %doc_lookup;
+	my %term_lookup;
+	
+	my %doc_in;
+	my %seen_words;
+	my %doc_map;
+	my %g_weights;  # global term weights
+	
+	my $doc_index = 0;
+	my $term_index = 0;
+	
+	my @doc_list = keys %docs; # Make sure these remain in same order
+	
+	my $num_docs = scalar @doc_list;
+	
+	
+	# First, parse the vocabulary out
+	foreach my $doc ( @doc_list ) {
+		$doc_lookup{ 'd'.$doc_index } = $doc;
+		foreach my $term ( keys %{ $docs{$doc} } ) {
+			$seen_words{$term}++;
+			$doc_map{$term} = "d".$doc_index;
+		}
+		$doc_index++;
+	}
+	
+	
+	
+	#Next, figure out who the singletons are,
+	#and keep a mapping
+	
+	my %singletons;
+	$term_index = 0;
+	my $max_seen = 0;
+	foreach my $seen ( keys %seen_words ) {
+		if ( $seen_words{$seen} == 1 ) {
+			$singletons{$seen} = $doc_map{$seen};
+			delete $seen_words{$seen};
+		} else {
+			$term_lookup{$seen} = 't'.$term_index++;
+			$max_seen = $seen_words{$seen} if 
+				$seen_words{$seen} > $max_seen;
+		} 
+	}
+	
+	$self->{'singletons'} = \%singletons;
+	$doc_index = 0;
+	
+	
+	
+	
+	# Set edges in the graph
+	foreach my $doc ( @doc_list ) {
+		# Every word in this document
+		
+		foreach my $term ( keys %{ $docs{$doc} } ) {
+			next unless $seen_words{$term};
+			
+			my $tindex = $term_lookup{$term};
+			my $dindex = 'd'.$doc_index;
+			my $lcount = $docs{$doc}{$term};
+			my $l_weight = log( $lcount ) + 1;
+		
+			# We calculate global weight in the loop to conserve memory
+			my $g_weight = log( $num_docs / $seen_words{$term} );
+			
+			# edge weight is local weight * global weight, normalized 
+			# so it falls between zero and one
+			
+			my $t_weight = ( $g_weight * $l_weight ) / $max_seen;
+			print $t_weight, "\n";
+			$self->set_edge( $dindex, $tindex, $t_weight);
+		}
+		$doc_index++;
+	}
+	
+	
+	foreach my $single  ( keys %{ $self->{'singletons'} } ) {
+		print $single, ' ', $self->{'singletons'}->{$single}, "\n";
+	}
+	
+	$self->{'doc_lookup'} = \%doc_lookup;
+	$self->{'term_lookup'} = \%term_lookup;
+}
+	
+	
+	
+=item search @QUERY
+
+Searches the graph for all of the words in @QUERY.   No support yet for 
+document similarity searches, but it's coming.  Returns a hashref
+to a hash of document titles and relevance values.
+
+=cut
+	
+sub search {
+	my ( $self, @query ) = @_;
+	
+	
+	# First, check keyword search
+	
+	$self->_clear();
+	foreach my $word ( @query ) {
+		print "Searching $word \n" if $self->{'debug'};
+		
+		# Check to see if this is a singleton word
+		
+		if ( exists ( $self->{'singletons'}{$word} )){
+			print "\t$word  is a singleton\n" if $self->{'debug'};
+			my $dnode = $self->{'singletons'}{$word};
+			$self->_energize( $dnode, $self->{'START_ENERGY'});
+		
+		} else {
+			
+			my $tnode = $self->{'term_lookup'}{$word}
+				or carp "Word $word not found\n";
+			next unless $term;
+			$self->_energize( $tnode, $self->{'START_ENERGY'} );
+		}
+	}
+	
+	
+	my $e = $self->{'energy'};
+	my %result;
+	foreach my $k ( sort { $e->{$b} <=> $e->{$a} }
+					keys %{ $e } ) {
+		
+		next if $k =~ /^t/;   # skip term nodes
+		my $doc = $self->{'doc_lookup'}->{$k};
+		$result{$doc} = $e->{$k};
+	}
+	return \%result;
+	
+}
+
+
+sub set_edge {
+	my ( $self, $source, $sink, $value ) = @_;
+	croak "No source node" unless defined $source;
+	croak "No sink node" unless defined $sink;
+	croak "no value defined " unless defined $value;
+	
+	$self->{'neighbors'}{$source}{$sink} = $value;
+	$self->{'neighbors'}{$sink}{$source} = $value;
+	#print "\tsetting edge $sink, $source, $value\n";
+}
+
+
 # Wipe the graph free of stored energies
 
-sub _reset {
+sub _clear {
 	my ( $self ) = @_;
 	$self->{'energy'} = undef;
-	return 1;
 }
 
 # Gather the stored energy values from the graph
@@ -197,35 +355,38 @@ sub _energize {
 
 	my ( $self, $node, $energy ) = @_;
 	
+	
 	return unless defined $self->{'neighbors'}{$node};
 	
 	$self->{'energy'}->{$node} += $energy;
 	$self->{'indent'}++;
 
-	if ( $self->{'debug'} ) {
+	if ( $self->{'debug'} > 1 ) {
 		print ' ' x $self->{'indent'};
 		print "Energizing node $node with energy $energy\n";
 	}
 	#sleep 1;
 	my $degree = scalar keys %{ $self->{'neighbors'}->{$node} };
 	
-	if ( $self->{'debug'} ) {
+	if ( defined $self->{'debug'} && $self->{'debug'} > 1) {
 		print  ' ' x $self->{'indent'};
 		print "Node $node has $degree neighbors\n" if $self->{'debug'}	
 	}
 	
 	croak "Fatal error: encountered node of degree zero" unless $degree;
 	my $subenergy = $energy / $degree;
-	
-	if ( $subenergy > $self->{'threshold'} ) {
+	print "\tsubenergy is $subenergy\n" if $self->{'debug'} > 1;
+	if ( $subenergy > $self->{ACTIVATE_THRESHOLD} ) {
 		foreach my $neighbor ( keys %{ $self->{'neighbors'}{$node} } ) {
-			my $weighted_energy = $subenergy * $self->{'neighbors'}{$node}{$neighbor};
+			my $edge = $self->{'neighbors'}{$node}{$neighbor};
+			my $weighted_energy = $subenergy * $edge;
 			$self->_energize( $neighbor, $weighted_energy );
 		} 
 	}	
 	$self->{'indent'}--;	
 	return 1;
 }
+
 
 1;
 
