@@ -1,3 +1,16 @@
+0.14 7.13.2004
+
+- Fixed bug in orphan removal on node delete operation
+- Updated 'store' method to use network order
+- Fixed bug where spurious 'D:' and 'T:' in doc titles misled 
+  term/doc list methods
+- Added find_by_title method and tests
+  
+0.13  3.14.2004
+
+- Changed interface on 'delete' to support term node deletion
+- Updated invariant.t and add_subtract.t with interface change
+
 0.12  3.13.2004
 
 - Added intersection method

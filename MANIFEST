@@ -19,6 +19,7 @@ t/add_subtract.t
 t/dump.t
 t/has.t
 t/merge.t
+t/find_by_title.t
 t/intersection.t
 t/invariance.t
 t/rebalancing.t
@@ -34,3 +35,4 @@ t/data/nest/nest/6
 t/data/subdir
 t/data/subdir/2
 t/data/subdir/4
+META.yml                                Module meta-data (added by MakeMaker)

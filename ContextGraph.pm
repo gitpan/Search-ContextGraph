@@ -7,7 +7,7 @@ use base "Storable";
 use File::Find;
 use IO::Socket;
 
-our $VERSION = '0.12';
+our $VERSION = '0.14';
 
 # If you are in an environment that can't compile XS
 # modules, comment out the next three lines of code
@@ -308,9 +308,21 @@ sub rename {
 	croak "document $old not found" unless
 		exists $self->{neighbors}{'D:'.$old};
 	
-	return if exists $self->{neighbors}{'D:'.$new};
+	my $bad = "D:$old";
+	my $good = "D:$new";
 	
-
+	return if exists $self->{neighbors}{$good};
+	
+	my $s = $self->{neighbors};
+	foreach my $n ( keys %{ $s->{$bad} } ) {
+		$s->{$good}{$n} = 
+		$s->{$n}{$good} =
+		$s->{$bad}{$n};
+		delete $s->{$bad}{$n};
+		delete $s->{$n}{$bad};
+	}
+	delete $s->{$bad};
+	return 1;
 
 }
 
@@ -509,7 +521,7 @@ sub add {
 		push @edges, [ $dnode, $tnode, $final_weight, $lcount ];
 
 	}
-
+	$self->{reweight_flag} = 1;
 	__normalize( \@edges );
 
 	# XS VERSION 
@@ -637,29 +649,72 @@ as an argument.  Returns 1 if successful, undef otherwise.
 
 sub delete {
 
-	my ( $self, $title ) = @_;
-	return unless defined $title;
-	my $node = 'D:'.$title;
+	my ( $self, $type, $name ) = @_;
+	
+	croak "Please provide a type" unless defined $type;
+	croak "Invalid type $type passed to delete method.  Must be one of [TD]"
+		unless $type =~ /^[TD]$/io;
+	croak "Please provide a node name" unless defined $name;
+	
+	return unless defined $name;
+	my $node = $self->_nodeify( $type, $name);
 
 	my $n = $self->{neighbors};
-	return unless exists $self->{neighbors}{$node};
+	croak "Found a neighborless node $node"
+		unless exists $n->{$node};
 
-	my @terms = keys %{ $self->{neighbors}{$node} };
+	my @terms = keys %{ $n->{$node} };
 
+	warn "found ", scalar @terms, " neighbors attached to $node\n"
+		if $self->{debug};
 	# Check to see if we have orphaned any terms
 	foreach my $t ( @terms ) {
-		#delete $self->{neighbors}{$node}{$t};
-		delete $self->{neighbors}{$t}{$node};
+		
+		delete $n->{$node}{$t};
+		delete $n->{$t}{$node};
 
-		if ( $self->doc_count( $t ) == 0	) {
-			delete $self->{neighbors}{$t};
-		} 
+		if ( scalar keys %{ $n->{$t} } == 0 ) {
+			warn "\tdeleting orphaned node $t" if $self->{debug};
+			my ( $subtype, $name ) = $t =~ /^(.):(.*)$/;
+			#$self->delete( $subtype, $name );
+			delete $n->{$t};
+		}
 	}
 
-	delete $self->{neighbors}{$node};
+	delete $n->{$node};
+	$self->check_consistency();
+	$self->{reweight_flag} = 1;
 	$self->reweight_graph if $self->{auto_reweight};
 }
 
+
+=item distance_graph
+
+Returns a graph of terms or documents with relative distances
+
+=cut
+
+sub distance_graph {
+	my ( $self, $type ) = @_;
+	
+	if ( $type eq 'T' ) {
+		my $n = $self->{neighbors};
+		
+		foreach my $node ( keys %{$n} ) {
+			next unless $node =~ /T:/;
+			warn "Processing node $node\n";
+			# get all neighbors within two hops
+			foreach my $doc ( keys %{$node} ) {
+				
+			}
+			
+		}
+		
+	} elsif ( $type eq 'D' ) {
+	} else {
+		croak "Unsupported distance graph type '$type'";
+	}
+}
 
 =item has_doc DOC
 
@@ -688,6 +743,82 @@ sub has_term {
 }	
 
 
+sub distance {
+	my ( $self, $n1, $n2, $type ) = @_;
+	croak unless $type;
+	$type = lc( $type );
+	croak unless $type =~ /^[dt]$/;
+	my $key = ( $type eq 't' ? 'terms' : 'documents' );
+	my @shared = $self->intersection( 	$key => [ $n1, $n2 ] );
+	return 0 unless @shared;
+	#warn "Found ", scalar @shared, " nodes shared between $n1 and $n2\n";
+	
+	my $node1 = $self->_nodeify( $type, $n1 );
+	my $node2 = $self->_nodeify( $type, $n2 );
+	# formula is w(t1,d1)/deg(d1) + w(t1,d2)/deg(d2) ... ) /deg( t1 )
+	
+	#warn "Calculating distance\n";
+	my $sum1 = 0;
+	my $sum2 = 0;
+	foreach my $next ( @shared ) {
+		my ( undef, $lcount1) =  split m/,/, $self->{neighbors}{$node1}{$next};
+		my ( undef, $lcount2) =  split m/,/, $self->{neighbors}{$node2}{$next};
+		#warn "\t LCOUNT for $node1 -- $next is $lcount1\n";
+		#warn "\t LCOUNT for $node2 -- $next is $lcount2\n";
+		my $degree = $self->degree( $next );
+		#warn "\t degree of $next is $degree\n";
+		my $elem1 = $lcount1 / $degree;
+		$sum1 += $elem1;
+		my $elem2 = $lcount2 / $degree;
+		$sum2 += $elem2;
+	}
+	#warn "sum is $sum1, $sum2\n";
+	my $final = ($sum1 / $self->degree( $node1 )) + ( $sum2 / $self->degree( $node2 ));
+	#warn "final is $final\n";
+	return $final;
+	
+	
+}
+
+sub distance_matrix {
+	my ( $self, $type, $limit ) = @_;
+	croak "Must provide type argument to distance_matrix()" 
+		unless defined $type;
+	croak "must provide limit" unless $limit;
+	my @nodes;
+	if ( lc( $type ) eq 'd' ) {
+		@nodes = $self->doc_list();
+	} elsif ( lc( $type ) eq 't' ) {
+		@nodes = $self->term_list();
+	} else {
+		croak "Unsupported type $type";
+	}
+	
+	my @ret;
+my $count = 0;
+	foreach my $from ( @nodes ) {
+		warn $from, " - $count\n";
+		$count++;
+		my $index = -1;
+		my @found;
+		foreach my $to ( @nodes ) {
+			$index++;
+			next if $from eq $to;
+			my $dist = $self->distance( $from, $to, $type );
+			push @found, [ $index, $dist ] if $dist;
+			#print( $index++, ' ', $dist, " " ) if $dist;
+		}
+		my @sorted = sort { $b->[1] <=> $a->[1] }
+					 @found;
+		my @final = splice ( @sorted, 0, $limit );
+		push @ret, join " ", ( map { join ' ', $_->[0],  substr($_->[1], 0, 7)  } 
+						  sort { $a->[0] <=> $b->[0] } 
+						  @final), "\n";
+		#print "\n";
+	}
+	return join "\n", @ret;
+
+}
 =item intersection @NODES
 
 Returns a list of neighbor nodes that all the given nodes share in common
@@ -802,6 +933,7 @@ sub reweight_graph {
 				my $gweight = log( $doc_count / $self->doc_count( $term ) ) + 1;
 				my $lweight = log( $lcount ) + 1;
 				$weight = ( $gweight * $lweight );
+				
 			} else {
 
 				$weight = log( $lcount ) + 1;
@@ -816,6 +948,7 @@ sub reweight_graph {
 			$n->{$node}{$e->[1]} = $n->{$e->[1]}{$node} = $pair;
 		}
 	}
+	$self->{reweight_flag} = 0;
 	return 1;
 }
 
@@ -941,7 +1074,7 @@ sub doc_list {
 				 $self->{neighbors} );
 
 	sort map { s/^D://o; $_ }
-		 grep /D:/, keys %{ $hash };
+		 grep /^D:/, keys %{ $hash };
 }
 
 
@@ -1028,6 +1161,30 @@ sub dump_tdm {
 
 
 
+=item near_neighbors [NODE] 
+
+Returns a list of neighbor nodes of the same type (doc/doc, or term/term) two
+hops away.
+
+=cut
+
+sub near_neighbors {
+	my ( $self, $name, $type ) = @_;
+	
+	my $node = $self->_nodeify( $type, $name );
+	
+	my $n = $self->{neighbors}{$node};
+	
+	my %found;
+	foreach my $next ( keys %{$n} ) {
+		foreach my $mynext ( keys %{ $self->{neighbors}{$next} }){
+			$found{$mynext}++;
+		}
+	}
+	delete $found{$node};
+	return keys %found;
+}
+
 
 =item term_count [DOC]
 
@@ -1066,7 +1223,7 @@ sub term_list {
 			 );
 
 	sort map { s/^T://o; $_ }
-		 grep /T:/, keys %{ $node };
+		 grep /^T:/, keys %{ $node };
 }
 
 
@@ -1146,6 +1303,25 @@ sub simple_search {
 	return @sorted_docs;
 }
 
+=item find_by_title @TITLES
+
+Given a list of patterns, searches for documents with matching titles
+
+=cut
+
+sub find_by_title {	
+	my ( $self, @titles ) = @_;
+	my @found;
+	my @docs = $self->doc_list();
+	my $pattern = join '|', @titles;
+	my $match_me = qr/$pattern/i;
+	#warn $match_me, "\n";
+	foreach my $d ( @docs ) {
+	#	warn $d, "\n";
+		push @found, $d if $d =~ $match_me;
+	}
+	return @found;
+}
 
 
 =item find_similar @DOCS
@@ -1271,7 +1447,7 @@ sub store {
 	if ( $self->{'xs'} ) {
 		croak "Cannot store object when running in XS mode.";
 	} else {
-		$self->SUPER::store(@args);
+		$self->SUPER::nstore(@args);
 	}
 }
 
@@ -1306,7 +1482,7 @@ sub _nodeify {
 	my ( $self, $prefix, @list ) = @_;
 	my @nodes;
 	foreach my $item ( @list ) {
-		my $name = $prefix.':'.$item;
+		my $name = uc($prefix).':'.$item;
 		warn "Node $name not found"
 			unless $self->{'xs'} 
 			or defined $self->{'neighbors'}{$name};
@@ -1404,6 +1580,37 @@ sub _add_node {
 # 	INTERNAL METHODS
 # 
 
+# each node should have the same number of inbound
+# and outbound links
+
+sub check_consistency {
+
+	my ( $self ) = @_;
+	my %inbound;
+	my %outbound;
+	
+	
+	foreach my $node ( keys %{$self->{neighbors}} ) {
+		$outbound{$node} = scalar keys %{$self->{neighbors}{$node}};
+		foreach my $neighbor ( keys %{ $self->{neighbors}{$node} } )	{
+			$inbound{$neighbor}++;
+		}
+	}
+	
+	my $in = scalar keys %inbound;
+	my $out = scalar keys %outbound;
+	carp "number of nodes with inbound links ($in) does not match number of nodes with outbound links ( $out )"
+		unless scalar keys %inbound == scalar keys %outbound;
+	
+	foreach my $node ( keys %inbound ) {
+		$outbound{$node} ||= 0;
+		carp "$node has $inbound{$node} inbound links, $outbound{$node} outbound links\n"
+			unless $inbound{$node} == $outbound{$node};
+	}
+
+}
+
+
 # Wipe the graph free of stored energies
 
 sub _clear {
@@ -1424,6 +1631,7 @@ sub _collect {
 	}
 	return $result;
 }
+
 
 
 
@@ -1452,8 +1660,14 @@ sub _energize {
 	my $degree = scalar keys %{ $self->{'neighbors'}->{$node} };
 
 
-
-	croak "Fatal error: encountered node of degree zero" unless $degree;
+	if ( $degree == 0 ) {
+		
+		carp "WARNING: reached a node without neighbors: $node at search depth $self->{depth}\n";
+		$self->{depth}--;
+		return;
+	}
+	
+	
 	my $subenergy = $energy / (log($degree)+1);
 
 

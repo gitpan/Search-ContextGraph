@@ -54,7 +54,7 @@ is( $g->degree( 'T:pig'), 2, "Term node has correct degree" );
 my @original =  $g->dump_node( 'D:doc-4' );
 
 
-$g->delete( 'doc-4' );
+$g->delete( 'D', 'doc-4' );
 is( $g->degree( 'T:pig'), 1, "Term node degree updated properly" );
 
 ( $docs, $words ) = $g->search( 'pig' );
