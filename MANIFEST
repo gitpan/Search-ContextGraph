@@ -22,6 +22,7 @@ t/merge.t
 t/find_by_title.t
 t/intersection.t
 t/invariance.t
+t/mldbm.t
 t/rebalancing.t
 t/simple_search.t
 t/term_doc_lists.t
@@ -29,10 +30,7 @@ t/update.t
 t/data/1
 t/data/3
 t/data/5
-t/data/nest
-t/data/nest/nest
 t/data/nest/nest/6
-t/data/subdir
 t/data/subdir/2
 t/data/subdir/4
 META.yml                                Module meta-data (added by MakeMaker)

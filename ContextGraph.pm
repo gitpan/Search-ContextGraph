@@ -7,19 +7,7 @@ use base "Storable";
 use File::Find;
 use IO::Socket;
 
-our $VERSION = '0.14';
-
-# If you are in an environment that can't compile XS
-# modules, comment out the next three lines of code
-
-#################################
-# XS is disabled in this version
-#################################
-
-#use DynaLoader;
-#our @ISA = qw/DynaLoader Storable/;
-#bootstrap Search::ContextGraph $VERSION;
-
+our $VERSION = '0.15';
 
 
 my $count = 0;
@@ -35,6 +23,8 @@ Search::ContextGraph - spreading activation search engine
 
   my $cg = Search::ContextGraph->new();
 
+  # first you add some documents, perhaps all at once...
+  
   my %docs = (
     'first'  => [ 'elephant', 'snake' ],
     'second' => [ 'camel', 'pony' ],
@@ -42,31 +32,44 @@ Search::ContextGraph - spreading activation search engine
   );
 
   $cg->bulk_add( %docs );
+  
+  # or in a loop...
+  
+  foreach my $title ( keys %docs ) {
+  	 $cg->add( $title, $docs{$title} );
+  }
 
-	- OR -
+  #	or from a file...
 
   my $cg = Search::ContextGraph->load_from_dir( "./myfiles" );
 
-  # Lazy programmer's search
+  # you can store a graph object for later use
+  
+  $cg->store( "stored.cng" );
+  
+  # and retrieve it later...
+  
+  my $cg = ContextGraph->retrieve( "stored.cng" );
+  
+  
+  # SEARCHING
+  
+  # the easiest way 
 
   my @ranked_docs = $cg->simple_search( 'peanuts' );
 
 
-  # Spreading activation can give you 
-  # both similar documents and semantically 
-  # related words
+  # get back both related terms and docs for more power
 
   my ( $docs, $words ) = $cg->search('snake');
 
 
-  # You can use a document as your query, instead
-  # of searching on a keyword
+  # you can use a document as your query
 
   my ( $docs, $words ) = $cg->find_similar('First Document');
 
 
-  # Or you can combine words and docs in your
-  # query for maximum control
+  # Or you can query on a combination of things
 
   my ( $docs, $words ) = 
     $cg->mixed_search( { docs  => [ 'First Document' ],
@@ -80,8 +83,7 @@ Search::ContextGraph - spreading activation search engine
       print "Document $k had relevance ", $docs->{$k}, "\n";
   }
 
-  # Store the graph for future generations
-  $cg->store( "filename" );
+
 
   # Reload it
   my $new = Search::ContextGraph->retrieve( "filename" );
@@ -178,6 +180,25 @@ sub new {
 	# backwards compatible...
 	*add_document = \&add;
 	*add_documents = \&bulk_add;
+	
+	# plucene friendly
+	*optimize	= \&reweight_graph;
+	*is_indexed = \&has_doc;
+	
+	# fail on all unknown paramters (helps fight typos)
+	my @allowed = qw/debug auto_reweight use_global_weights max_depth START_ENERGY ACTIVATE_THRESHOLD COLLECT_THRESHOLD use_file xs/;
+	my %check;
+	$check{$_}++ foreach @allowed;
+	
+	my @forbidden;
+	foreach my $k ( keys %params ) {
+		push @forbidden, $k unless exists $check{$k};
+	}
+	if ( @forbidden ) {
+		croak "The following unrecognized parameters were detected: ", 
+		join ", ", @forbidden;
+	}
+
 
 	my $obj = bless 
 		{ debug => 0,
@@ -194,21 +215,17 @@ sub new {
 
 		}, 
 	$class;
-	if ( $obj->{'xs'} ) {
-		croak "XS not implemented in this version";
-
-=item
-		my $graph = Search::ContextGraph::Graph->new(
-			$obj->{START_ENERGY},
-			$obj->{ACTIVATE_THRESHOLD},
-			$obj->{COLLECT_THRESHOLD},
-		);
-		$obj->{Graph} = $graph;
-		$obj->{'next_free_id'} = 0;
-		$obj->{'node_map'} = {};
-
-=cut
-
+	
+	
+	if ( $obj->{use_file} ) {
+		my %neighbors;
+		use MLDBM qw/DB_File Storable/;
+		use Fcntl;
+		warn "Using MLDBM: $obj->{use_file}";
+		$obj->{neighbors} = tie %neighbors, 'MLDBM', $obj->{use_file} or die $!;
+		#$obj->{neighbors} = \%neighbors;
+		
+	
 	}
 
 	return $obj;
@@ -306,10 +323,10 @@ sub rename {
 	croak "rename method needs two arguments" unless
 		defined $old and defined $new;
 	croak "document $old not found" unless
-		exists $self->{neighbors}{'D:'.$old};
+		exists $self->{neighbors}{ _nodeify('D', $old ) };
 	
-	my $bad = "D:$old";
-	my $good = "D:$new";
+	my $bad = _nodeify( 'D', $old );
+	my $good = _nodeify( 'D', $new );
 	
 	return if exists $self->{neighbors}{$good};
 	
@@ -493,7 +510,7 @@ sub add {
 
 	croak "Please provide a document identifier" unless defined $title;
 
-	my $dnode = 'D:'.$title;
+	my $dnode =  _nodeify( 'D', $title );
 	croak "Tried to add document with duplicate identifier: '$title'\n"
 		if exists $self->{neighbors}{$dnode};
 
@@ -504,12 +521,11 @@ sub add {
 		@list = keys %{$words};
 	}
 
-
 	croak "Tried to add a document with no content" unless scalar @list;
 
 	my @edges;
 	foreach my $term ( @list ) {
-		my $tnode = 'T:'.lc( $term );
+		my $tnode = _nodeify( 'T', lc( $term ) );
 
 		# Local weight for the document
 		my $lcount = ( ref $words eq 'HASH' ? $words->{$term} : 1 );
@@ -524,33 +540,36 @@ sub add {
 	$self->{reweight_flag} = 1;
 	__normalize( \@edges );
 
-	# XS VERSION 
 
-	if ( $self->{xs} ) {
-		my $map = $self->{'node_map'};
-		foreach my $ed ( @edges ) {
-			my ( $d, $t, $e ) = @{$ed};
-			my $dindex = ( exists $map->{$d}  
-							? $map->{$d}  
-							: $self->_add_node( $d, 2 ) );
+=cut
 
-			my $tindex =  ( exists $map->{$t} 
-							? $map->{$t}
-							: $self->_add_node( $t, 1 ));
+DEVELOPMENT 
 
-			$self->{Graph}->set_edge( $dindex, $tindex, $ed );
+	if ( $self->{supersize} ) {
+		my $n = $self->{neighbors};
+		foreach my $e ( @edges ) {
+			#warn "adding edge $e->[0], $e->[1]\n";
+			
+			$n->{$e->[0]} = {} unless exists $n->{$e->[0]};
+			$n->{$e->[1]} = {} unless exists $n->{$e->[1]};
+			
+			my $tmp = $n->{$e->[0]};
+			$tmp->{$e->[1]} = join ',', $e->[2], $e->[3];
+			$tmp = $n->{$e->[1]};
+			$tmp->{$e->[0]} = join ',', $e->[2], $e->[3];
 		}
+=cut
 
-
+		
 	# PURE PERL VERSION 
-
-	} else {
+	#}  else 	{
 		foreach my $e ( @edges ) {
 			$self->{neighbors}{$e->[0]}{$e->[1]} = join ',', $e->[2], $e->[3];
 			$self->{neighbors}{$e->[1]}{$e->[0]} = join ',', $e->[2], $e->[3];
 		}
-
-	}
+	#}
+	
+	
 	#print "Reweighting graph\n";
 	$self->reweight_graph() if $self->{auto_reweight};
 	return 1;
@@ -624,8 +643,6 @@ sub bulk_add {
 
 	my ( $self, %incoming_docs ) = @_;
 
-
-
 	# Disable graph rebalancing until we've added everything
 	{
 		local $self->{auto_reweight} = 0;
@@ -638,7 +655,15 @@ sub bulk_add {
 }
 
 
+=item degree NODE
+
+Given a raw node, returns the degree (raw node means the node must
+be prefixed with 'D:' or 'T:' depending on type )
+
+=cut
+
 sub degree { scalar keys %{$_[0]->{neighbors}{$_[1]}} }
+
 
 =item delete DOC
 
@@ -651,13 +676,13 @@ sub delete {
 
 	my ( $self, $type, $name ) = @_;
 	
-	croak "Please provide a type" unless defined $type;
+	croak "Must provide a node type to delete() method" unless defined $type;
 	croak "Invalid type $type passed to delete method.  Must be one of [TD]"
 		unless $type =~ /^[TD]$/io;
 	croak "Please provide a node name" unless defined $name;
 	
 	return unless defined $name;
-	my $node = $self->_nodeify( $type, $name);
+	my $node = _nodeify( $type, $name);
 
 	my $n = $self->{neighbors};
 	croak "Found a neighborless node $node"
@@ -685,36 +710,10 @@ sub delete {
 	$self->check_consistency();
 	$self->{reweight_flag} = 1;
 	$self->reweight_graph if $self->{auto_reweight};
+	1;
 }
 
 
-=item distance_graph
-
-Returns a graph of terms or documents with relative distances
-
-=cut
-
-sub distance_graph {
-	my ( $self, $type ) = @_;
-	
-	if ( $type eq 'T' ) {
-		my $n = $self->{neighbors};
-		
-		foreach my $node ( keys %{$n} ) {
-			next unless $node =~ /T:/;
-			warn "Processing node $node\n";
-			# get all neighbors within two hops
-			foreach my $doc ( keys %{$node} ) {
-				
-			}
-			
-		}
-		
-	} elsif ( $type eq 'D' ) {
-	} else {
-		croak "Unsupported distance graph type '$type'";
-	}
-}
 
 =item has_doc DOC
 
@@ -725,7 +724,7 @@ Returns true if the document with identifier DOC is in the collection
 sub has_doc { 
 	my ( $self, $doc ) = @_;
 	carp "Received undefined value for has_doc" unless defined $doc;
-	my $node = 'D:'.$doc;
+	my $node = _nodeify( 'D', $doc );
 	return exists $self->{neighbors}{$node} ||  undef;
 }
 
@@ -738,10 +737,19 @@ Returns true if the term TERM is in the collection
 sub has_term { 
 	my ( $self, $term ) = @_;
 	carp "Received undefined value for has_term" unless defined $term;
-	my $node = 'T:'.$term;
+	my $node = _nodeify( 'T', $term );
 	return exists $self->{neighbors}{$node} || undef;
 }	
 
+
+
+=item distance NODE1, NODE2, TYPE
+
+Calculates the distance between two nodes of the same type (D or T)
+using the formula:
+
+	distance = ...
+=cut
 
 sub distance {
 	my ( $self, $n1, $n2, $type ) = @_;
@@ -749,12 +757,12 @@ sub distance {
 	$type = lc( $type );
 	croak unless $type =~ /^[dt]$/;
 	my $key = ( $type eq 't' ? 'terms' : 'documents' );
-	my @shared = $self->intersection( 	$key => [ $n1, $n2 ] );
+	my @shared = $self->intersection( $key => [ $n1, $n2 ] );
 	return 0 unless @shared;
 	#warn "Found ", scalar @shared, " nodes shared between $n1 and $n2\n";
 	
-	my $node1 = $self->_nodeify( $type, $n1 );
-	my $node2 = $self->_nodeify( $type, $n2 );
+	my $node1 = _nodeify( $type, $n1 );
+	my $node2 = _nodeify( $type, $n2 );
 	# formula is w(t1,d1)/deg(d1) + w(t1,d2)/deg(d2) ... ) /deg( t1 )
 	
 	#warn "Calculating distance\n";
@@ -763,8 +771,7 @@ sub distance {
 	foreach my $next ( @shared ) {
 		my ( undef, $lcount1) =  split m/,/, $self->{neighbors}{$node1}{$next};
 		my ( undef, $lcount2) =  split m/,/, $self->{neighbors}{$node2}{$next};
-		#warn "\t LCOUNT for $node1 -- $next is $lcount1\n";
-		#warn "\t LCOUNT for $node2 -- $next is $lcount2\n";
+
 		my $degree = $self->degree( $next );
 		#warn "\t degree of $next is $degree\n";
 		my $elem1 = $lcount1 / $degree;
@@ -779,6 +786,14 @@ sub distance {
 	
 	
 }
+
+=item distance_matrix TYPE LIMIT
+
+Used for clustering using linear local embedding.  Produces a similarity matrix
+in a format I'm too tired to document right now.  LIMIT is the maximum number
+of neighbors to keep for each node.
+
+=cut
 
 sub distance_matrix {
 	my ( $self, $type, $limit ) = @_;
@@ -795,7 +810,7 @@ sub distance_matrix {
 	}
 	
 	my @ret;
-my $count = 0;
+	my $count = 0;
 	foreach my $from ( @nodes ) {
 		warn $from, " - $count\n";
 		$count++;
@@ -808,8 +823,7 @@ my $count = 0;
 			push @found, [ $index, $dist ] if $dist;
 			#print( $index++, ' ', $dist, " " ) if $dist;
 		}
-		my @sorted = sort { $b->[1] <=> $a->[1] }
-					 @found;
+		my @sorted = sort { $b->[1] <=> $a->[1] } @found;
 		my @final = splice ( @sorted, 0, $limit );
 		push @ret, join " ", ( map { join ' ', $_->[0],  substr($_->[1], 0, 7)  } 
 						  sort { $a->[0] <=> $b->[0] } 
@@ -819,6 +833,7 @@ my $count = 0;
 	return join "\n", @ret;
 
 }
+
 =item intersection @NODES
 
 Returns a list of neighbor nodes that all the given nodes share in common
@@ -829,10 +844,10 @@ sub intersection {
 	my ( $self, %nodes ) = @_;
 	my @nodes;
 	if ( exists $nodes{documents} ) {
-		push @nodes, map { 'D:'.$_ } @{ $nodes{documents}};
+		push @nodes, map { _nodeify( 'D', $_ ) } @{ $nodes{documents}};
 	} 
 	if ( exists $nodes{terms} ) {
-		push @nodes, map { 'T:'.$_ } @{ $nodes{terms}};
+		push @nodes, map { _nodeify( 'T', $_ ) } @{ $nodes{terms}};
 	} 
 	
 	my %seen;
@@ -856,45 +871,15 @@ in the format NODE => RELEVANCE, for all nodes above the threshold value.
 sub raw_search {
 	my ( $self, @query ) = @_;
 
+	$self->_clear();
+	foreach ( @query ) {
+		$self->_energize( $_, $self->{'START_ENERGY'});
+	}
+	my $results_ref = $self->_collect();
 
-	my $results_ref;
-
-	### XS VERSION  #######
-	if ( $self->{'xs'} ) {
-
-		$self->{'Graph'}->reset_graph();
-		my $map = $self->{'node_map'};
-
-		foreach my $node ( map { $map->{$_} } @query ) {
-
-			$self->{'Graph'}->energize_node( $node, $self->{'START_ENERGY'}, 1);
-		}
-		my $results_arref = $self->{Graph}->collect_results();
-
-		my %hash;
-
-		foreach my $res ( @{$results_arref} ) {
-			my $key =  $self->{'id_map'}[$res->[0]] || next;
-			$hash{$key} = $res->[1] || 0;
-		}
-		$results_ref = \%hash;
-
-
-	#### PURE PERL VERSION #####
-	} else {
-	    $self->_clear();
-		foreach ( @query ) {
-			$self->_energize( $_, $self->{'START_ENERGY'});
-		}
-		$results_ref = $self->_collect();
-	}	
 
 	return $results_ref;
 }
-
-
-
-
 
 
 
@@ -918,7 +903,8 @@ sub reweight_graph {
 	#print "Renormalizing for doc count $doc_count\n" if $self->{debug};
 	foreach my $node ( keys %{$n} ) {
 
-		next unless $node =~ /^D/o;
+		next unless $node =~ /^D:/o;
+		warn "reweighting at node  $node\n" if $self->{debug} > 1;
 		my @terms = keys %{ $n->{$node} };
 		my @edges;
 		foreach my $t ( @terms ) {
@@ -968,18 +954,19 @@ sub update {
 
 	croak "update not implemented in XS" if $self->{xs};
 	croak "Must provide a document identifier to update_document" unless defined $id;
-	my $dnode = 'D:'.$id;
+	my $dnode = _nodeify( 'D', $id );
 
 	return unless exists $self->{neighbors}{$dnode};
-	croak "must provide a word list " unless defined $words and 
-										     		ref $words and
-										    	 	( ref $words eq 'HASH' or
-										    	 	  ref $words eq 'ARRAY' );
+	croak "must provide a word list " 
+		unless defined $words and 
+						ref $words and
+					  ( ref $words eq 'HASH' or
+						ref $words eq 'ARRAY' );
 
 	my $n = $self->{neighbors}{$dnode};
+	
 	# Get the current word list
 	my @terms = keys %{ $n };
-
 
 	if ( ref $words eq 'ARRAY' ) {
 		my %words;
@@ -994,7 +981,7 @@ sub update {
 
 	foreach my $term ( keys %{$words} ) {
 
-		my $t = 'T:'.$term;
+		my $t = _nodeify( 'T', $term );
 
 		if ( exists $n->{$t} ){
 
@@ -1044,7 +1031,7 @@ for the entire collection.
 sub doc_count {
 	my ( $self, $term ) = @_;
 	if ( defined $term ) {
-		$term = 'T:'.$term unless $term =~ /^T:/;
+		$term = _nodeify( 'T', $term ) unless $term =~ /^T:/;
 		my $node = $self->{neighbors}{$term};
 		return 0 unless defined $node;
 		return scalar keys %{$node};
@@ -1067,7 +1054,7 @@ sub doc_list {
 	my ( $self, $term ) = @_;
 	my $t;
 	if ( defined $term and $term !~ /T:/) {
-		$t = 'T:'.$term;
+		$t = _nodeify( 'T', $term );
 	}
 	my $hash = ( defined $term ?
 				 $self->{neighbors}{$t} :
@@ -1171,7 +1158,7 @@ hops away.
 sub near_neighbors {
 	my ( $self, $name, $type ) = @_;
 	
-	my $node = $self->_nodeify( $type, $name );
+	my $node = _nodeify( $type, $name );
 	
 	my $n = $self->{neighbors}{$node};
 	
@@ -1196,7 +1183,7 @@ if no document is specified, in the entire collection.
 sub term_count {
 	my ( $self, $doc ) = @_;
 	if ( defined $doc ) {
-		my $node = $self->{neighbors}{'D:'.$doc};
+		my $node = $self->{neighbors}{ _nodeify( 'D', $doc) };
 		return 0 unless defined $node;
 		return scalar keys %{$node};
 	} else {
@@ -1218,7 +1205,7 @@ sub term_list {
 	my ( $self, $doc ) = @_;
 
 	my $node = ( defined $doc ?
-				 $self->{neighbors}{'D:'.$doc} :
+				 $self->{neighbors}{ _nodeify( 'D', $doc) } :
 				 $self->{neighbors}
 			 );
 
@@ -1251,7 +1238,7 @@ sub word_count {
 	}
 
 	foreach my $term (@terms ) {
-		$term = 'T:'.$term unless $term =~/^T:/o;
+		$term = _nodeify( 'T', $term) unless $term =~/^T:/o;
 		foreach my $doc ( keys %{ $n->{$term} } ) {
 			( undef, my $lcount ) = split /,/, $n->{$term}{$doc};
 			$count += $lcount;
@@ -1277,7 +1264,7 @@ a hash of words and relevance values.
 
 sub search {
 	my ( $self, @query ) = @_;	
-	my @nodes = $self->_nodeify( 'T', @query );
+	my @nodes = _nodeify( 'T', @query );
 	my $results = $self->raw_search( @nodes );	
 	my ($docs, $words) = _partition( $results );
 	return ( $docs, $words);
@@ -1296,7 +1283,7 @@ sub simple_search {
 	my ( $self, $query ) = @_;
 	my @words = map { s/\W+//g; lc($_) }
 				split m/\s+/, $query;	
-	my @nodes = $self->_nodeify( 'T', @words );
+	my @nodes = _nodeify( 'T', @words );
 	my $results = $self->raw_search( @nodes );
 	my ($docs, $words) = _partition( $results );
 	my @sorted_docs = sort { $docs->{$b} <=> $docs->{$a} } keys %{$docs};
@@ -1334,7 +1321,7 @@ and  returns a pair of hashrefs. First hashref is to a hash of docs and relevanc
 
 sub find_similar {
 	my ( $self, @docs ) = @_;
-	my @nodes = $self->_nodeify( 'D', @docs );
+	my @nodes = _nodeify( 'D', @docs );
 	my $results = $self->raw_search( @nodes );
 	my ($docs, $words) = _partition( $results );
 	return ( $docs, $words);
@@ -1356,8 +1343,8 @@ sub merge {
 	croak "Invalid type argument $type to merge [must be one of (D,T)]" 
 		unless $type =~ /^[DT]/io;
 	
-	my $target  = $self->_nodeify( $type, $good );
-	my @sources = $self->_nodeify( $type, @bad );
+	my $target  = _nodeify( $type, $good );
+	my @sources = _nodeify( $type, @bad );
 	
 	my $tnode = $self->{neighbors}{$target};
 	
@@ -1426,8 +1413,8 @@ sub mixed_search {
 	my $tref = $incoming->{'terms'} || [];
 	my $dref = $incoming->{'docs'}  || [];
 
-	my @dnodes = $self->_nodeify( 'D', @{$dref} );
-	my @tnodes = $self->_nodeify( 'T', @{$tref} );
+	my @dnodes = _nodeify( 'D', @{$dref} );
+	my @tnodes = _nodeify( 'T', @{$tref} );
 
 	my $results = $self->raw_search( @dnodes, @tnodes );
 	my ($docs, $words) = _partition( $results );
@@ -1479,16 +1466,11 @@ sub _neighbors {
 
 
 sub _nodeify {
-	my ( $self, $prefix, @list ) = @_;
+	my ( $prefix, @list ) = @_;
 	my @nodes;
 	foreach my $item ( @list ) {
-		my $name = uc($prefix).':'.$item;
-		warn "Node $name not found"
-			unless $self->{'xs'} 
-			or defined $self->{'neighbors'}{$name};
-		push @nodes, $name;
+		push @nodes,  uc($prefix).':'.$item;
 	}
-	return unless @nodes;
 	( wantarray ?  @nodes : $nodes[0] );
 }
 
@@ -1591,6 +1573,7 @@ sub check_consistency {
 	
 	
 	foreach my $node ( keys %{$self->{neighbors}} ) {
+		next unless $node =~ /^[DT]:/; # for MLDBM compatibility
 		$outbound{$node} = scalar keys %{$self->{neighbors}{$node}};
 		foreach my $neighbor ( keys %{ $self->{neighbors}{$node} } )	{
 			$inbound{$neighbor}++;
@@ -1608,6 +1591,77 @@ sub check_consistency {
 			unless $inbound{$node} == $outbound{$node};
 	}
 
+}
+
+
+=item have_edge RAWNODE1, RAWNODE2
+
+Returns true if the nodes share an edge.  Node names must be prefixed with 'D' or 'T'
+as appropriate.
+
+=cut
+
+sub have_edge {
+	my ( $self, $node1, $node2 ) = @_;
+	return exists $self->{neighbors}{$node1}{$node2};
+}
+
+
+{
+
+	my %visited;
+	my %component;
+	my $depth;
+	
+=item connected_components
+
+Returns an array of connected components in the graph.  Each component is a list
+of nodes that are mutually accessible by traveling along edges.
+
+=cut
+
+	sub connected_components {
+		my ( $self ) = @_;
+		
+		%visited = (); # clear any old info
+		%component = ();
+		
+		
+		my $n = $self->{neighbors};
+		
+		
+		my @node_list =  keys %{$n};
+		my @components;
+		
+		while ( @node_list ) {
+			my $start = shift @node_list;
+			next if exists $visited{$start};
+			
+			last unless $start;
+			warn "Visiting neighbors for $start\n";
+			visit_neighbors( $n, $start );
+			push @components, [ keys %component ];
+			 %component = ();
+		}
+		
+		warn "Found ", scalar @components, " connected components\n";
+		return @components;
+		
+		
+	}
+
+	sub visit_neighbors {
+		my ( $g, $l ) = @_;
+		return if $visited{$l};
+		$depth++;
+		$visited{$l}++; $component{$l}++;
+		warn  $depth, "  $l\n";
+		my @neigh = keys %{ $g->{$l} };		
+		foreach my $n ( @neigh ) {
+			visit_neighbors( $g, $n );
+		}
+		$depth--;
+	}	
 }
 
 
@@ -1655,9 +1709,10 @@ sub _energize {
 	}
 
 
-
+	my $n = $self->{neighbors};
+	
 	#sleep 1;
-	my $degree = scalar keys %{ $self->{'neighbors'}->{$node} };
+	my $degree = scalar keys %{ $n->{$node} };
 
 
 	if ( $degree == 0 ) {
@@ -1683,8 +1738,8 @@ sub _energize {
 		print '   ' x $self->{'depth'}, 
 		"$node: propagating subenergy $subenergy to $degree neighbors\n"
 		 if $self->{'debug'} > 1;
-		foreach my $neighbor ( keys %{ $self->{'neighbors'}{$node} } ) {
-			my $pair = $self->{'neighbors'}{$node}{$neighbor};
+		foreach my $neighbor ( keys %{ $n->{$node} } ) {
+			my $pair = $n->{$node}{$neighbor};
 			my ( $edge, undef ) = split /,/, $pair;
 			my $weighted_energy = $subenergy * $edge;
 			print '   ' x $self->{'depth'}, 
@@ -1723,6 +1778,124 @@ sub DESTROY {
 
 1;
 
+__END__
+
+package Search::ContextGraph::SQLite;
+
+use DBI;
+use strict;
+use warnings;
+
+our %hash;
+
+sub TIEHASH {
+	my ( $class ) = @_;
+	my $self = {};
+	warn "Creating tied hash\n";
+	my $dbh = DBI->connect("dbi:SQLite:dbname=test.db","","");
+	if ( !-f "test.db" ) {
+		my $sql = $dbh->do( "drop table edges; create table edges ( source char(100), sink char(100), weight float )" );
+		my $sql = $dbh->do( "create index source on edges(source)" );
+		my $sql = $dbh->do( "create index sink on edges(sink)" );
+		my $sql = $dbh->do( "create unique index edge on edges(source, sink)" );
+	}
+	$self->{dbh} = $dbh;
+	bless $self, $class;
+}
+
+sub FETCH {
+	my ( $self, $key ) = @_;
+	
+	$self->{$key};	
+}
+
+sub STORE {
+	my ( $self, $key, $value ) = @_;
+	print "Storing key $key, value $value\n";
+	#print ref $value, "\n";
+	print "Hash has ", scalar %{$value}, "values\n";
+	foreach my $k ( keys %{$value} ) {
+		print "\t$k $value->{$k}\n";
+	}
+	$self->{$key} = $value
+}
+
+sub EXISTS {
+	my ( $self, $key ) = @_;
+	exists $self->{$key};
+}
+
+sub DELETE {
+	my ( $self, $key ) = @_;
+	delete $self->{$key};
+}
+
+sub FIRSTKEY { 
+	my ( $self ) = @_;
+	my $a = keys %{ $self };
+	each %{ $self };
+}
+
+sub NEXTKEY {
+	my ( $self ) = @_;
+	each %{ $self };
+}
+
+sub DESTROY {}
+	
+1;
+
+
+package Search::ContextGraph::TieWrapper;
+
+use strict;
+use warnings;
+
+our %hash;
+
+sub TIEHASH {
+	my ( $class ) = @_;
+	my $self = {};
+	bless $self, $class;
+}
+
+sub FETCH {
+	my ( $self, $key ) = @_;
+	$self->{$key};	
+}
+
+sub STORE {
+	my ( $self, $key, $value ) = @_;
+	$self->{$key} = $value
+}
+
+sub EXISTS {
+	my ( $self, $key ) = @_;
+	exists $self->{$key};
+}
+
+sub DELETE {
+	my ( $self, $key ) = @_;
+	delete $self->{$key};
+}
+
+sub FIRSTKEY { 
+	my ( $self ) = @_;
+	my $a = keys %{ $self };
+	each %{ $self };
+}
+
+sub NEXTKEY {
+	my ( $self ) = @_;
+	each %{ $self };
+}
+
+sub DESTROY {}
+	
+1;
+
+
+
 =back
 
 =head1 BUGS
@@ -1739,9 +1912,9 @@ sub DESTROY {
 
 Maciej Ceglowski E<lt>maciej@ceglowski.comE<gt>
 
-The technique used here was developed in 2003 by John Cuadrado, and later
-found to have antecedents in the spreading activation approach described 
-in a 1981 doctoral dissertation by Scott Preece.
+The spreading activation technique used here was originally discussed in a 1981
+dissertation by Scott Preece, at the University of Illinois.
+
 XS implementation thanks to Schuyler Erle.
 
 =head1 CONTRIBUTORS 

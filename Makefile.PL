@@ -4,7 +4,9 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
     'NAME'			=> 'Search::ContextGraph',
     'VERSION_FROM'	=> 'ContextGraph.pm', # finds $VERSION
-    'PREREQ_PM'		=> { 'Test::More' => 0, }, # e.g., Module::Name => 1.1
+    'PREREQ_PM'		=> { 'Test::More' => 0,
+    					 'MLDBM' => 0.1,
+    					  }, # e.g., Module::Name => 1.1
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
       (
       	ABSTRACT_FROM 	=> 'ContextGraph.pm', # retrieve abstract from module

@@ -1,4 +1,13 @@
-0.14 7.13.2004
+0.15  8.14.2004
+
+- Changed hard-coded 'D' and 'T' prefixing to use _nodeify subroutine
+- Added connected_components method 
+- Began adding support for file-based hashes using MLDBM, enabling very
+	large collections.
+- Minor bugfixes, now tests for D: and T: prefixes explicitly,
+	instead of assuming that those are the only node types.
+	
+0.14  7.13.2004
 
 - Fixed bug in orphan removal on node delete operation
 - Updated 'store' method to use network order
@@ -29,7 +38,6 @@
 - Added dependency on File::Find
 - Normalize all terms to lower case
 
-
 0.09  2.23.2004
 
 - It's now possible to add, delete, and update individual docs
@@ -41,19 +49,16 @@
 - Broke C implementation :-(
 - Added new test suites
 
-
 0.08 ( not released )
 
 - Reduced size of Node struct in XS code (removed type field)
 - XS and Perl code now preallocates space when reading from TDM file
 - Added max_depth attribute, to limit search depth
 
-
 0.07
 
 - Altered energy distribution scheme to more effective log(degree)+1 
 	(thanks to Martin Spernau for testing this)
-
 
 0.06  7.23.2003
 
@@ -63,7 +68,6 @@
 - Updated test cases to reflect bugfixes
 - Added XS/pure Perl switch in constructor
 - Updated test cases to test both XS and pure Perl versions
-
 
 0.05  7.17.2003
 
@@ -78,7 +82,6 @@
 - Two levels of debugging output
 - Added credits for John Cuadrado and Scott Preece	
 
-
 0.04  7.14.2003
 
 - Applied patches from Leon Brocard
@@ -87,11 +90,9 @@
 	 - cleanup of debugging flag and output
 	 - added dependency on Test::More
 
-
 0.03  7.11.2003 
 
 - Added check to make sure no edges can have greater than unit weight
-
 
 0.02  7.11.2003
 
@@ -99,7 +100,6 @@
   build the search engine for you.   Earlier TDM format universally reviled by 
   Perl community...
 - Added some POD and minor code patches from Ken Williams
-
 
 0.01 6.01.2003
 
