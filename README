@@ -1,0 +1,52 @@
+Search/Context_Graph version 0.01
+=================================
+
+This module is an implementation of a search technique called 'contextual network search', or 'spreading activation search'.
+
+The idea is to represent a document collection as a set of document and term nodes in a bipartite graph.  How you generate the term list is up to you - our own approach is to extract all nouns and noun phrases using a part-of-speech tagger (see L<Lingua::EN::Tagger>).
+
+Documents and terms are connected by weighted edges.  Weights on the edges are a function of your choice of weighting algorithm.   The only restriction is that weights must not exceed 1.
+
+We search the graph by energizing a query node with an arbitrary starting energy E.  We then distribute that energy among the neighbor nodes, according to the following formula.  First, divide the energy by the number of neighbor nodes - call this new value S.   For example, if the starting energy is 10,000, and our node has five neighbors, S = 2000 units.   Next, determine whether S exceeds our
+arbitrary threshold.    If S is less than the threshold, we stop propagating.  If S exceeds the threshold, we assign energies to all the neighbor nodes, and recurse down.
+
+The energy assigned to each neighbor node will depend on the weight of the edge connecting it to the starting node.  Since this weight is guaranteed to fall between 0 and 1, the maximum energy a neighbor node can receive is S.
+
+
+INPUT FILE FORMAT
+
+The module requires a term-document matrix file as input, using this file to generate the graph.  The TDM file is a plain text file with the following format:
+
+	Arbitrary text
+	Arbitrary text
+	Arbitrary text
+	Arbitrary text
+	A B C B C B C
+	....
+
+The first four lines of the TDM file can be anything at all.  After that, it's
+one line per document.   Each document line starts with the number of terms in that document (A), followed by a series of pairs (B C) where B is the index value of the term (for example, word 4352) and C is the weight to place on the edge connecting the document node to the term node.   This weight must be between zero and one.  For the simplest model, with no weighting, just use ones for every edge.
+
+As an example, here's a line for a document containing four terms, using the simplest weighting model:
+
+	4 12 1 26 1 98 1 42 1
+
+It's up to you to maintain a mapping between node indices and actual documents
+or terms.  The search engine will only return index values.
+
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+COPYRIGHT AND LICENCE
+
+Copyright (C) 2003 Maciej Ceglowski, John Cuadrado, NITLE
+
+This software may be distributed under the same terms as Perl itself.
+
