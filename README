@@ -1,5 +1,9 @@
-Search/Context_Graph version 0.06
-=================================
+INTRODUCTION
+
+Spreading activation search is a useful way of getting something called "expanded recall", where you can type in a keyword query and get back relevant  results that may contain an exact keyword match, as if by magic.    The magic in this case is very straightforward, but you don't have to tell your boss that.
+
+Most keyword search engines work by building some kind of a lookup table, in many cases a reverse index of words to documents.  This module behaves a little differently, cr
+
 
 This module is an implementation of a search technique called 'contextual
 network search', or 'spreading activation search'.

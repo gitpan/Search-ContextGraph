@@ -21,6 +21,7 @@ t/has.t
 t/invariance.t
 t/rebalancing.t
 t/simple_search.t
+t/term_doc_lists.t
 t/update.t
 t/data/1
 t/data/3

@@ -7,7 +7,7 @@ use base "Storable";
 use File::Find;
 use IO::Socket;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 # If you are in an environment that can't compile XS
 # modules, comment out the next three lines of code
@@ -295,6 +295,27 @@ sub load_from_tdm {
 }
 
 
+=item rename OLD, NEW
+
+Renames a document.  Will return undef if the new name is already in use.
+
+=cut
+sub rename {
+
+	my ( $self, $old, $new ) = @_;
+	croak "rename method needs two arguments" unless
+		defined $old and defined $new;
+	croak "document $old not found" unless
+		exists $self->{neighbors}{'D:'.$old};
+	
+	return if exists $self->{neighbors}{'D:'.$new};
+	
+
+
+}
+
+
+
 =item retrieve FILENAME
 
 Loads a previously stored graph from disk, using Storable.
@@ -525,7 +546,57 @@ sub add {
 }
 
 
+=item add_file PATH [, name => NAME, parse => CODE]
 
+Adds a document from a file.   By default, uses the PATH provided as the document
+identifier, and parses the file by splitting on whitespace.  If a fancier title, 
+or more elegant parsing behavior is desired, pass in named arguments as indicated.
+NAME can be any string, CODE should be a reference to a subroutine that takes one
+argument (the contents of the file) and returns an array of tokens, or a hash in the
+form TOKEN => COUNT, or a reference to the same.
+
+=cut
+
+sub add_file {
+	my ( $self, $path, %params ) = @_;
+	
+	croak "Invalid file '$path' provided to add_file method."
+		unless defined $path and -f $path;
+		
+	my $title = ( exists $params{name} ? $params{name} : $path );
+
+	local $/;
+	open my $fh, $path or croak "Unable to open $path: $!";
+	my $content = <$fh>;
+	
+	my $ref;
+	
+	if ( exists $params{parse} ) {
+		croak "code provided is not a reference" unless
+			ref $params{parse};
+		croak "code provided is not a subroutine" unless
+			ref $params{parse} eq 'CODE';
+		
+		$ref = $params{parse}->( $content );
+		croak "did not get an appropriate reference back after parsing"
+			unless ref $ref and ref $ref =~ /(HASH|ARRAY)/;
+		
+		
+	} else {
+	
+		my $code = sub { 
+			my $txt  = shift; 
+			$txt =~ s/\W/ /g;
+			my @toks = split m/\s+/, $txt;
+			\@toks;
+		};
+		$ref = $code->($content);
+	}
+	
+	return unless $ref;
+	$self->add( $title, $ref );
+	
+}
 
 =item bulk_add DOCS
 
@@ -698,7 +769,7 @@ sub reweight_graph {
 			my $pair = $n->{$node}{$t};
 			my ( undef, $lcount ) = split /,/, $pair;
 			( my $term = $t ) =~ s/^T://;
-			croak unless $lcount;
+			croak "did not receive a local count" unless $lcount;
 			my $weight;
 			if ( $self->{use_global_weights} ) {
 
@@ -969,7 +1040,7 @@ sub term_list {
 			 );
 
 	sort map { s/^T://o; $_ }
-		 grep /T:/, keys %{ $self->{neighbors} };
+		 grep /T:/, keys %{ $node };
 }
 
 
@@ -1268,11 +1339,11 @@ sub _energize {
 	my ( $self, $node, $energy ) = @_;
 
 
-	return unless defined $self->{'neighbors'}{$node};
-	my $orig = $self->{'energy'}{$node} || 0;
-	$self->{'energy'}->{$node} += $energy;
+	return unless defined $self->{neighbors}{$node};
+	my $orig = $self->{energy}{$node} || 0;
+	$self->{energy}->{$node} += $energy;
 	return if ( $self->{depth} == $self->{max_depth} );
-	$self->{'depth'}++;
+	$self->{depth}++;
 
 	if ( $self->{'debug'} > 1 ) {
 		print '   ' x $self->{'depth'};

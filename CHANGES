@@ -1,3 +1,8 @@
+0.11  3.04.2004
+
+- Added add_file method at suggestion of Aaron Cope
+- Fixed bug in term_list method that would always return full list
+
 0.10  3.03.2004
 
 - Made adding content-free document a fatal error
