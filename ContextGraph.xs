@@ -35,16 +35,17 @@ new_edge(edge, sink, weight)
 	float	weight
 
 Graph *
-new_graph(graph, capacity = DEFAULT_CAPACITY, activationThreshold = 1, collectionThreshold = 1)
+new_graph(graph, capacity = DEFAULT_CAPACITY, activationThreshold = 1, collectionThreshold = 1, maxDepth = 100000000)
 	Graph *	graph
 	long	capacity
 	float	activationThreshold
 	float	collectionThreshold
+	long 	maxDepth
 
 Node *
 new_node(node, type, capacity=DEFAULT_CAPACITY)
 	Node *	node
-	NodeType	type
+	int 	type
 	long	capacity
 
 MODULE = Search::ContextGraph	PACKAGE = Search::ContextGraph::Graph 
@@ -53,7 +54,7 @@ Node *
 add_node(graph, id, type, capacity=DEFAULT_CAPACITY)
 	Graph *	graph
 	long	id
-	NodeType	type
+	int	type
 	long	capacity
 
 
@@ -107,6 +108,11 @@ energize_node(graph, id, energy, isStart)
 	int isStart
 
 void
+preallocate( graph, number )
+	Graph * graph
+	int number
+	
+void
 reset_graph(graph)
 	Graph *	graph
 
@@ -115,19 +121,21 @@ free_graph(graph)
 	Graph *	graph
 
 Graph *
-new(CLASS, startingEnergy = 100, activationEnergy = 1, collectionEnergy = 1)
+new(CLASS, startingEnergy = 100, activationEnergy = 1, collectionEnergy = 1, maxDepth = 100000000)
 	char *CLASS = NO_INIT
 	float startingEnergy;
 	float activationEnergy;
 	float collectionEnergy;
-    PROTOTYPE: $;$$$
+	long maxDepth;
+	
+    PROTOTYPE: $;$$$$
     CODE:
 		/* Zero((void*)&RETVAL, sizeof(RETVAL), char); */
 	RETVAL = malloc(sizeof(Graph));
 		/* fprintf( stderr, "NEW called: %p\n", RETVAL ); */
 		new_graph(
 			(Graph *)RETVAL, DEFAULT_CAPACITY,
-			activationEnergy, collectionEnergy);
+			 activationEnergy, collectionEnergy, maxDepth);
     OUTPUT:
 	RETVAL
 
@@ -156,6 +164,7 @@ capacity(THIS, __value = NO_INIT)
 	Graph * THIS
 	long __value
     PROTOTYPE: $;$
+    
     CODE:
 	if (items > 1)
 	    THIS->capacity = __value;
@@ -168,6 +177,7 @@ activationThreshold(THIS, __value = NO_INIT)
 	Graph * THIS
 	float __value
     PROTOTYPE: $;$
+    
     CODE:
 	if (items > 1)
 	    THIS->activationThreshold = __value;
@@ -199,6 +209,24 @@ startingEnergy(THIS, __value = NO_INIT)
     OUTPUT:
 	RETVAL
 
+int
+maxDepth( THIS )
+	Graph * THIS
+	PROTOTYPE: $
+	CODE:
+	RETVAL = THIS->maxDepth;
+	OUTPUT:
+	RETVAL
+	
+int
+numCalls( THIS )
+	Graph * THIS
+	PROTOTYPE: $
+	CODE:
+	RETVAL = THIS->numCalls;
+	OUTPUT:
+	RETVAL
+	
 long
 debug(THIS, __value = NO_INIT)
 	Graph * THIS
@@ -216,6 +244,7 @@ indent(THIS, __value = NO_INIT)
 	Graph * THIS
 	long __value
     PROTOTYPE: $;$
+    
     CODE:
 	if (items > 1)
 	    THIS->indent = __value;
@@ -241,6 +270,13 @@ set_edge(THIS, source, sink, weight)
 		add_edge( m, source, weight );
 
 void
+presize_node( THIS, node, size )
+	Graph *THIS
+	long node
+	int size
+
+
+void
 set_directed_edge(THIS, source, sink, weight)
 	Graph *THIS
 	long source
@@ -264,7 +300,7 @@ add_edge(node, sink, weight)
 Node *
 new(CLASS, type, capacity = DEFAULT_CAPACITY)
 	char *CLASS = NO_INIT
-	NodeType type
+	int type
 	long capacity
     PROTOTYPE: $$;$
     CODE:
@@ -274,17 +310,7 @@ new(CLASS, type, capacity = DEFAULT_CAPACITY)
     OUTPUT:
 	RETVAL
 
-NodeType
-type(THIS, __value = NO_INIT)
-	Node * THIS
-	NodeType __value
-    PROTOTYPE: $;$
-    CODE:
-	if (items > 1)
-	    THIS->type = __value;
-	RETVAL = THIS->type;
-    OUTPUT:
-	RETVAL
+
 
 long
 degree(THIS, __value = NO_INIT)
@@ -327,10 +353,12 @@ MODULE = Search::ContextGraph PACKAGE = Search::ContextGraph::Edge
 
 Edge *
 new(CLASS, sink, weight)
-	char *CLASS = NO_INIT
 	long sink
 	float weight
     PROTOTYPE: $$$
+    INIT:
+    sink = 0;
+    weight = 0;
     CODE:
 	RETVAL = malloc(sizeof(Edge));
 	new_edge((Edge *)RETVAL, sink, weight);

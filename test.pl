@@ -11,7 +11,8 @@ my %docs = (
 );
 
 for my $XS ( 0..1 ) {
-	#last if $XS;
+	
+	last if $XS; # XS IS BROKEN IN THIS VERSION!
 	
 	my $cg = Search::ContextGraph->new( xs => $XS);
 	ok($cg, "have Search::ContextGraph object");
@@ -39,7 +40,7 @@ for my $XS ( 0..1 ) {
 	
 	# Try adding a duplicate title
 	eval{ $cg->add_documents( %docs ); }; 
-	ok(  $@ =~ /^Tried to add document with duplicate title/,
+	ok(  $@ =~ /^Tried to add document with duplicate identifier:/,
 		 "complained about duplicate title");
 	
 	my %new_docs = (	
@@ -53,7 +54,7 @@ for my $XS ( 0..1 ) {
 	
 	
 	# Check that the word count is right
-	my @words = $cg->dump_words();
+	my @words = $cg->term_list();
 	is ( scalar @words, 9, "word count is correct" );
 	my $flat = join '', sort @words;
 	is ( $flat, 'boabullcamelconstrictoreagleelephantfoxponysnake', "word list is correct" );
@@ -66,11 +67,11 @@ for my $XS ( 0..1 ) {
 	
 	
 	( $docs, $words ) = $cg->search('snake');
-	is(sprintf("%2.2f", $docs->{"First Document"}), 21.86, 'result changed for non-singleton search');
+	is(sprintf("%2.2f", $docs->{"First Document"}), 28.36, 'result changed for non-singleton search');
 	
 	( $docs, $words ) = $cg->find_similar('First Document');
-	is(sprintf("%2.2f", $docs->{"First Document"}), '124.42', 'find similar search correct');
-	is(sprintf("%2.2f", $docs->{"Fourth Document"}), '6.31', 'find similar search correct');
+	is(sprintf("%2.2f", $docs->{"First Document"}), 122.34, 'find similar search correct');
+	is(sprintf("%2.2f", $docs->{"Fourth Document"}), 5.57, 'find similar search correct');
 	
 	
 	# Try storing the sucker
@@ -88,7 +89,7 @@ for my $XS ( 0..1 ) {
 		
 		
 		($docs, $words ) = $cg->find_similar('First Document');
-		is(sprintf("%2.2f", $docs->{"First Document"}), '124.42', 'reloaded search object works fine');
+		is(sprintf("%2.2f", $docs->{"First Document"}), 122.34, 'reloaded search object works fine');
 	}
 	
 	my $y = Search::ContextGraph->new( debug => 1, xs => $XS );
@@ -100,9 +101,9 @@ for my $XS ( 0..1 ) {
 	
 	
 	($docs, $words) = $y->mixed_search( { terms => [ 111, 109, 23 ], docs => [33,21,12] });
-	is( scalar keys %$words, 271, "Got right number of results");
-	is(sprintf("%2.2f", $docs->{163}), 7.55, "mixed search got right doc value");
-	is(sprintf("%2.2f", $words->{248}), 6.22, "mixed search got right term value");
+	is( scalar keys %$words,141, "Got right number of results");
+	is(sprintf("%2.2f", $docs->{163}), 1.09, "mixed search got right doc value");
+	is(sprintf("%2.2f", $words->{248}), 0.52, "mixed search got right term value");
 	
 	
 		

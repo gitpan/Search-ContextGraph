@@ -14,3 +14,10 @@ cns.c
 cns.h
 ContextGraph.xs
 bench.pl
+t/accessors.t
+t/add_subtract.t
+t/dump.t
+t/has.t
+t/invariance.t
+t/rebalancing.t
+t/update.t

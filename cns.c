@@ -29,7 +29,7 @@ Edge *new_edge ( Edge *edge, long sink, float weight ) {
 
 Node *new_node ( Node *node, NodeType type, long capacity ) {
     /* Initialize a given node struct. */
-    node->type	    = type;
+    //node->type	    = type;
     node->degree    = 0;
     node->capacity  = capacity;
     node->edges	    = calloc( capacity, sizeof(Node) );
@@ -40,12 +40,13 @@ Node *new_node ( Node *node, NodeType type, long capacity ) {
 }
 
 Graph *new_graph ( Graph *graph, long capacity,
-	float activationThreshold, float collectionThreshold ) {
+	float activationThreshold, float collectionThreshold, long maxDepth) {
     /* Initialize a given graph struct. */
     graph->size	    = 0;
     graph->capacity = capacity;
     graph->activationThreshold = activationThreshold;
     graph->collectionThreshold = collectionThreshold;
+    graph->maxDepth = maxDepth;
     graph->nodes    = calloc( capacity, sizeof(Node)  );
     graph->energy   = calloc( capacity, sizeof(float) );
     memset( graph->nodes, 0, capacity * sizeof(Node) );
@@ -68,9 +69,10 @@ void free_graph (Graph *graph) {
 
 
 void reset_graph( Graph *graph ) {
-    int i;
     graph->energy = realloc( graph->energy, graph->size * sizeof(float) );
     memset( graph->energy, 0, graph->size * sizeof(float) );
+    graph->numCalls = 0;
+    graph->maxDepth = -1;
 }
 
 Edge *add_edge ( Node *node, long sink, float weight ) {
@@ -84,9 +86,19 @@ Edge *add_edge ( Node *node, long sink, float weight ) {
 
     /* If we have more edges than we've allocated memory for, reallocate. */
     if (deg > cap) {
-	node->capacity *= 2;
-	node->edges = realloc( node->edges, node->capacity * sizeof(Edge) );
-	memset( node->edges + cap, 0, cap * sizeof(Edge) );
+    	
+		//if( cap < 255 ) {
+			
+		//	node->capacity = cap + 256;
+			//fprintf( stderr, "\tincreasing node capacity %d , %d\n", node->capacity , cap);
+		//} else {
+			//printf( "\tdoubling node capacity %d\n", node->capacity);
+			node->capacity *= 2;
+		//}
+		
+		node->edges = realloc( node->edges, node->capacity * sizeof(Edge) );
+		memset( node->edges + cap, 0, 
+			( node->capacity - cap ) * sizeof(Edge) );
     }
 
     /* Initialize the new edge. */
@@ -95,13 +107,44 @@ Edge *add_edge ( Node *node, long sink, float weight ) {
     return edge;
 }
 
+int preallocate ( Graph *graph, int nodecount ) {
+
+	int original;
+	
+	original = graph->capacity;
+	
+	if ( original < nodecount ) {
+		printf( "Pre-allocationg graph capacity (was %d) to %d\n", 	original, nodecount );
+		graph->capacity = nodecount;
+		graph->nodes = realloc( graph->nodes, graph->capacity * sizeof(Node));
+		memset( graph->nodes + original, 0, (graph->capacity - original) * sizeof(Node) );
+	}
+	return 1;
+}
+
+void presize_node( Graph *graph, long id, int size ) {
+
+	Node *n = ( graph->nodes + id );
+	long deg = n->degree;
+	long cap = n->capacity;
+	
+	if ( cap <  size ) {
+		n->capacity = size;
+		n->edges = realloc( n->edges, size * sizeof( Edge ));
+		memset( n->edges + cap, 0, (n->capacity -cap ) * sizeof(Edge));
+		//printf( "Presizing node capacity (was %d) to %d\n", cap, n->capacity );
+	}
+	
+}
+
+
 Node *add_node ( Graph *graph, long id, NodeType type, long capacity ) {
     Node *node;
 
     /* If the index of the to-be-created node is bigger than we've allocated,
      * we need to reallocated. */
     if (debug)
-    	fprintf( stderr, "%p add_node %ld/%ld (%ld)\n",
+    	fprintf( stderr, "%p add_node %ld/%d (%d)\n",
 			graph, id, graph->size, graph->capacity);
 	
 	
@@ -122,18 +165,18 @@ Node *add_node ( Graph *graph, long id, NodeType type, long capacity ) {
 		}
     }
     if (debug)
-    	fprintf( stderr, "%p --> size: %ld capacity: %ld (%ld)\n",
-	    graph, graph->size, graph->capacity, 0);
+    	fprintf( stderr, "%p --> size: %d capacity: %d\n",
+	    graph, graph->size, graph->capacity);
 
     /* Initialize the new node, unless there already is such a node. */
     node = graph->nodes + id;
-    if ( node->type == UNUSED ){
+    if ( node->capacity == 0 ){
 		new_node( node, type, capacity );
 	 	if (debug)
     	fprintf( stderr, "%p --> new node\n",
 	   	 node);
 	} else {
-		fprintf( stderr, "node %p had type %ld", node, node->type );
+		fprintf( stderr, "node %p ", node );
 	}
     return node;
 }
@@ -146,12 +189,17 @@ int energize_node( Graph *graph, long id, float energy, int isStartingPoint) {
     static int depth = 0;
     long n;
     
-	depth++;
+    // Keep track of some search statistics
+    graph->numCalls++;
+	if ( ++depth > graph->maxDepth ) 
+		graph->maxDepth = depth;
+	
+	
 	if (debug){
     	int i;
     	for (i = 0; i< depth;i++)
     		fprintf( stderr, "   ");
-    	fprintf(stderr, "%ld: energizing %f + %f\n", id, node->energy, energy, isStartingPoint);
+    	fprintf(stderr, "%ld: energizing %f + %f\n", id, node->energy, energy);
     }
     
     /* Activate the node and calculate the propagating energy. */
@@ -163,8 +211,8 @@ int energize_node( Graph *graph, long id, float energy, int isStartingPoint) {
 	}
 
 	/* Special case handling for nodes with just one neighbor 
-	/* Normally, we don't propagate energy at a singleton node 
-	/* But if it's the query node, we want to continue the search */
+	   Normally, we don't propagate energy at a singleton node 
+	   But if it's the query node, we want to continue the search */
 	
 	if ( node->degree == 1 ) {
 	
@@ -188,7 +236,7 @@ int energize_node( Graph *graph, long id, float energy, int isStartingPoint) {
     	int i;
     	for (i = 0; i< depth;i++)
     		fprintf( stderr, "   ");
-    	fprintf(stderr, "%ld: propagating subenergy %f to %ld neighbors\n", 
+    	fprintf(stderr, "%ld: propagating subenergy %f to %d neighbors\n", 
     		id, subenergy, node->degree);
     }
     
@@ -227,7 +275,6 @@ int compare_results( const void *a, const void *b ) {
     
     /* Find the nodes that scored higher than the threshold. */
     for (n = 0, m = 0; n < graph->size; n++ ) {
-    	float *energy = graph->energy + n;
 		if ( *( graph->energy + n) > graph->collectionThreshold ) {
 
 			Edge *e = result + m++;

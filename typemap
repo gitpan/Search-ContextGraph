@@ -2,7 +2,7 @@ TYPEMAP
 Edge *		O_OBJECT
 Graph *		O_OBJECT
 Node *		O_OBJECT
-NodeType	T_UV
+
 
 OUTPUT
 # The Perl object is blessed into 'CLASS', which should be a

@@ -1,8 +1,27 @@
+0.09 2.23.2004
+
+- It's now possible to add, delete, and update individual docs
+- Some regrettable but correct interface changes
+- Fixed serious bug where weighting was not being recalculated
+- Graph can now be rebalanced by hand
+- Adjusted graph to store lcounts as well as weights
+- Made global weighting optional
+- Broke C implementation :-(
+- Added new test suites
+
+
+0.08 ( not released )
+
+- Reduced size of Node struct in XS code (removed type field)
+- XS and Perl code now preallocates space when reading from TDM file
+- Added max_depth attribute, to limit search depth
+
+
 0.07
 
 - Altered energy distribution scheme to more effective log(degree)+1 
 	(thanks to Martin Spernau for testing this)
-- 
+
 
 0.06  7.23.2003
 

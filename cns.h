@@ -17,7 +17,7 @@ typedef struct edge_t {
 typedef enum node_type_t { UNUSED = 0, TERM, DOCUMENT } NodeType;
 
 typedef struct node_t {
-    NodeType	type;
+    //NodeType	type;
     int degree;
     int	capacity;
     float	energy;
@@ -32,14 +32,18 @@ typedef struct graph_t {
     float	activationThreshold;
     float	collectionThreshold;
     float	startingEnergy;
+    long 	maxDepth;
+    long	numCalls;
     int		debug;
     int		indent;
     } Graph;
 
 Edge *new_edge ( Edge *edge, long sink, float weight );
 Node *new_node ( Node *node, NodeType type, long capacity );
+int preallocate( Graph *graph, int capacity );
+void presize( Graph *graph, long node, int size );
 Graph *new_graph ( Graph *graph, long capacity,
-	float activationThreshold, float collectionThreshold );
+	float activationThreshold, float collectionThreshold, long maxDepth );
 void free_node (Node *node);
 void free_graph (Graph *graph);
 void reset_graph( Graph *graph );

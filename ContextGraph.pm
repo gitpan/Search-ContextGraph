@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use base "Storable";
 
-our $VERSION = '0.07';
+our $VERSION = '0.09';
 
 # If you are in an environment that can't compile XS
 # modules, comment out the next three lines of code
@@ -15,9 +15,7 @@ our @ISA = qw/DynaLoader Storable/;
 bootstrap Search::ContextGraph $VERSION;
 
 
-
-
-
+# TODO:  is array lookup really faster than log()?
 our @log_table = qw/0 1.00 1.69 2.10 2.39 2.61 2.79 2.95 3.08
 				    3.20 3.30 3.40 3.48 3.56 3.64 3.71 3.77 
 				    3.83 3.89 3.94 4.00 4.04 4.09 4.14 4.18 
@@ -77,18 +75,28 @@ Search::ContextGraph - Run searches using a contextual network graph
 
 =head1 DESCRIPTION
 
-Search a document collection using a spreading activation search.   The search
-algorithm represents the collection as a set of term and document nodes,
-connected to one another based on a co-occurrence matrix.  If a word occurs in
-a document, we create an edge between the appropriate term and document node.
-Searches take place by spreading energy from a query node along the edges of 
-the graph according to some simple rules.  All result nodes exceeding a threshold 
-T are returned.   You can read a full description of this algorithm
-at L<http://www.nitle.org/papers/Contextual_Network_Graphs.pdf>.
+Spreading activation is a neat technique for building search engines that 
+return accurate results for a query even when there is no exact keyword match.
+The engine works by building a data structure called a B<context graph>, which
+is a giant network of document and term nodes.  All document nodes are connected
+to the terms that occur in that document; similarly, every term node is connected
+to all of the document nodes that term occurs in.   We search the graph by 
+starting at a query node and distributing a set amount of energy to its neighbor
+nodes.  Then we recurse, diminishing the energy at each stage, until this
+spreading energy falls below a given threshold.   Each node keeps track of 
+accumulated energy, and this serves as our measure of relevance.  
+
+This means that documents that have many words in common will appear similar to the
+search engine.  Likewise, words that occur together in many documents will be 
+perceived as semantically related.  Especially with larger, coherent document 
+collections, the search engine can be quite effective at recognizing synonyms
+and finding useful relationships between documents. You can read a full 
+description of the algorithm at L<http://www.nitle.org/papers/Contextual_Network_Graphs.pdf>.
 
 The search engine gives expanded recall (relevant results even when there is no
 keyword match) without incurring the kind of computational and patent issues
-posed by latent semantic indexing (LSI).
+posed by latent semantic indexing (LSI).  The technique used here was originally
+described in a 1981 dissertation by Scott Preece.
 
 =head1 METHODS
 
@@ -100,45 +108,73 @@ Object constructor.   Possible parameters:
 
 =over
 
-=item * debug LEVEL
+=item auto_reweight
+
+Rebalance the graph every time a change occurs. Default is true.
+Disable and do by hand using L<reweight_graph> for better performance in
+graphs with frequent updates/additions/deletions.
+
+
+=item debug LEVEL
 
 Set this to 1 or 2 to turn on verbose debugging output
 
-=item * xs
+=item max_depth
+
+Set the maximum distance to spread energy out from the start
+node.  Default is effectively unlimited.  You can tweak it using L<set_max_depth>.
+Comes in handy if you find searches are too slow.
+
+=item xs
 
 When true, tells the module to use compiled C internals.  This reduces
 memory requirements by about 60%, but actually runs a little slower than the 
 pure Perl version.  Don't bother to turn it on unless you have a huge graph. 
 Default is pure Perl.
 
-BUG: using the compiled version makes it impossible to store the graph to disk.
+=over
 
-=item * START_ENERGY
+=item * using the compiled version makes it impossible to store the graph to disk.
+
+=item * xs is B<broken> in version 0.09.   But it will return in triumph!
+
+=back 
+
+=item START_ENERGY
 
 Initial energy to assign to a query node.  Default is 100.
 
-=item * ACTIVATE_THRESHOLD
+=item ACTIVATE_THRESHOLD
 
 Minimal energy needed to propagate search along the graph.  Default is 1.
 
-=item * COLLECT_THRESHOLD
+=item COLLECT_THRESHOLD
 
 Minimal energy needed for a node to enter the result set.  Default is 1.
 
-=back 
+=back
 
 =cut
 
 
 sub new {
 	my ( $class, %params) = @_;
+	
+	# backwards compatible...
+	*add_document = \&add;
+	*add_documents = \&bulk_add;
+	
 	my $obj = bless 
 		{ debug => 0,
-		  fast => 0,
+		  auto_reweight => 1,
+		  use_global_weights => 1,
+		  max_depth => 100000000,
 		  START_ENERGY => 100,
 		  ACTIVATE_THRESHOLD => 1,
 		  COLLECT_THRESHOLD => .2,
 	      %params,
+	      
+	      depth => 0,
 	      neighbors => {}, 
 
 		}, 
@@ -158,6 +194,56 @@ sub new {
 		
 }
 
+sub get_max_depth { $_[0]->{max_depth} }
+sub set_max_depth { croak "Tried to set maximum depth to an undefined value" 
+	 unless defined $_[1];
+	 $_[0]->{max_depth} = $_[1] || 100000000 
+}
+
+
+
+
+=item load_from_tdm FILENAME
+
+Opens and loads a term-document matrix (TDM) file to initialize the graph.
+The TDM encodes information about term-to-document links.
+This is a legacy method mainly for the convenience of the module author.
+For notes on the proper file format, see the README file.
+=cut
+
+sub load_from_tdm {
+	my  ( $self, $file ) = @_;
+	croak "TDM file $file does not exist" unless -f $file;
+	return if $self->{'loaded'};
+	$self->_read_tdm( $file );
+	$self->{'loaded'} = 1;
+	$self->reweight_graph();
+}
+
+
+=item retrieve FILENAME
+
+Loads a previously stored graph from disk, using Storable.
+
+=cut
+
+sub retrieve {
+	my ( $self, $file ) = @_;
+	croak "Must provide a filename to retrieve graph"
+		unless  $file;
+	croak "'$file' is not a file" unless
+		-f $file;
+	
+	Storable::retrieve( $file );
+}
+
+
+=back
+
+=head1 ACCESSORS
+
+=over
+
 =item [get|set]_activate_threshold
 
 Accessor for node activation threshold value.  This value determines how far 
@@ -175,6 +261,18 @@ sub set_activate_threshold {
 		unless $threshold > 0;
 	$self->{'ACTIVATE_THRESHOLD'} = $_[1]; 
 }
+
+
+=item [get|set]_auto_reweight
+
+Accessor for auto reweight flag.  If true, edge weights will be recalculated
+every time a document is added, updated or removed.  This can significantly slow 
+down large graphs.  On by default.
+
+=cut
+
+sub get_auto_reweight{ $_[0]->{auto_reweight} }
+sub set_auto_reweight{ $_[0]->{auto_reweight} = $_[0]->[1]; }
 
 
 =item [get|set]_collect_threshold
@@ -203,20 +301,17 @@ sub set_collect_threshold {
 	 return 1;
 }
 
-=item set_debug_mode [012]
+=item [get|set]_debug_mode LEVEL
 
 Turns debugging on or off.  1 is verbose, 2 is very verbose, 0 is off.
 
 =cut
 
+sub get_debug_mode { $_[0]->{debug} }
 sub set_debug_mode {
 	my ( $self, $mode ) = @_;
 	$self->{'debug'} = $mode;
 }
-
-
-sub get_dist_weight { $_[0]->{'dist_weight'} }
-sub set_dist_weight { $_[0]->{'dist_weight'} = $_[1] }
 
 
 
@@ -236,26 +331,206 @@ sub set_initial_energy {
 	croak "Can't set initial energy to negative value"
 		unless $start_energy > 0;
 	$self->{'START_ENERGY'} = $start_energy ;
-	}
+}
 
-=item load_from_tdm TDM_FILE [, LM_FILE]
+=item [get|set]_max_depth LEVEL
 
-Opens and loads a term-document matrix (TDM) file to initialize the graph.
-The TDM encodes information about term-to-document links.
-For notes on the proper file format, see the README file
-Note that document-document links are NOT YET IMPLEMENTED.
+You can tell the graph to cut off searches after a certain distance from
+the query node.  This can speed up searches on very large graphs, and has
+little adverse effect, especially if you are interested in just the first
+few search results.  Set this value to undef to restore the default (10^8).
 
 =cut
 
-sub load_from_tdm {
-	my  ( $self, $file ) = @_;
-	croak "TDM file $file does not exist" unless -f $file;
-	return if $self->{'loaded'};
-	$self->_read_tdm( $file );
-	$self->{'loaded'} = 1;
+
+
+=back
+
+=head1 METHODS
+
+=over 
+
+=item add DOC, WORDS
+
+Add a document to the search engine.  Takes as arguments a unique doc
+identifier and a reference to an array or hash of words in the 
+document.
+For example:
+
+	TITLE => { WORD1 => COUNT1, WORD2 => COUNT2 ... }
+
+or
+
+	TITLE => [ WORD1, WORD2, WORD3 ]
+
+Use L<bulk_add> if you want to pass in a bunch of docs all at once.
+
+=cut
+
+
+sub add {
+
+	my ( $self, $title, $words ) = @_;
+	
+	
+	croak "Please provide a word list" unless defined $words;
+	croak "Word list is not a reference to an array or hash"
+		unless ref $words and ref $words eq "HASH" or ref $words eq "ARRAY";
+		
+	croak "Please provide a document identifier" unless defined $title;
+	
+	my $dnode = 'D:'.$title;
+	croak "Tried to add document with duplicate identifier: '$title'\n"
+		if exists $self->{neighbors}{$dnode};
+	
+	my @list;
+	if ( ref $words eq 'ARRAY' ) {
+		@list = @{$words};
+	} else {
+		@list = keys %{$words};
+	}
+	
+	my @edges;
+	foreach my $term ( @list ) {
+		my $tnode = 'T:'.$term;
+
+		# Local weight for the document
+		my $lcount = ( ref $words eq 'HASH' ? $words->{$term} : 1 );
+		
+		# Update number of docs this word occurs in
+		my $gcount = ++$self->{term_count}{$term};
+		
+		my $final_weight = 1;
+		push @edges, [ $dnode, $tnode, $final_weight, $lcount ];
+		
+	}
+	
+	__normalize( \@edges );
+	
+	# XS VERSION 
+	
+	if ( $self->{xs} ) {
+		my $map = $self->{'node_map'};
+		foreach my $ed ( @edges ) {
+			my ( $d, $t, $e ) = @{$ed};
+			my $dindex = ( exists $map->{$d}  
+							? $map->{$d}  
+							: $self->_add_node( $d, 2 ) );
+							
+			my $tindex =  ( exists $map->{$t} 
+							? $map->{$t}
+							: $self->_add_node( $t, 1 ));
+							
+			$self->{Graph}->set_edge( $dindex, $tindex, $ed );
+		}
+	
+	
+	# PURE PERL VERSION 
+	
+	} else {
+		foreach my $e ( @edges ) {
+			$self->{neighbors}{$e->[0]}{$e->[1]} = join ',', $e->[2], $e->[3];
+			$self->{neighbors}{$e->[1]}{$e->[0]} = join ',', $e->[2], $e->[3];
+		}
+		
+	}
+	#print "Reweighting graph\n";
+	$self->reweight_graph() if $self->{auto_reweight};
+	return 1;
+	
 }
 
 
+
+
+=item bulk_add DOCS
+
+Add documents to the graph in bulk.  Takes as an argument a hash
+whose keys are document identifiers, and values are references
+to hashes in the form { WORD1 => COUNT, WORD2 => COUNT...}
+This method is faster than adding in documents one by one if
+you have auto_rebalance turned on.
+
+=cut
+
+sub bulk_add {
+
+	my ( $self, %incoming_docs ) = @_;
+	
+	
+	
+	# Disable graph rebalancing until we've added everything
+	{
+		local $self->{auto_reweight} = 0;
+	
+		foreach my $doc ( keys %incoming_docs ) {
+			$self->add( $doc, $incoming_docs{$doc});
+		} 
+	}
+	$self->reweight_graph() if $self->{auto_reweight};
+}
+
+
+sub degree { scalar keys %{$_[0]->{neighbors}{$_[1]}} }
+
+=item delete DOC
+
+Remove a document from the graph.  Takes a document identifier
+as an argument.  Returns 1 if successful, undef otherwise.
+
+=cut
+
+sub delete {
+
+	my ( $self, $title ) = @_;
+	return unless defined $title;
+	my $node = 'D:'.$title;
+	
+	my $n = $self->{neighbors};
+	return unless exists $self->{neighbors}{$node};
+	
+	my @terms = keys %{ $self->{neighbors}{$node} };
+	
+	# Check to see if we have orphaned any terms
+	foreach my $t ( @terms ) {
+		#delete $self->{neighbors}{$node}{$t};
+		delete $self->{neighbors}{$t}{$node};
+			
+		if ( $self->doc_count( $t ) == 0	) {
+			delete $self->{neighbors}{$t};
+		} 
+	}
+	
+	delete $self->{neighbors}{$node};
+	$self->reweight_graph if $self->{auto_reweight};
+}
+
+
+=item has_doc DOC
+
+Returns true if the document with identifier DOC is in the collection
+
+=cut
+
+sub has_doc { 
+	my ( $self, $doc ) = @_;
+	carp "Received undefined value for has_doc" unless defined $doc;
+	my $node = 'D:'.$doc;
+	return exists $self->{neighbors}{$node} ||  undef;
+}
+
+=item has_term TERM
+
+Returns true if the term TERM is in the collection
+
+=cut
+
+sub has_term { 
+	my ( $self, $term ) = @_;
+	carp "Received undefined value for has_term" unless defined $term;
+	my $node = 'T:'.$term;
+	return exists $self->{neighbors}{$node} || undef;
+}	
 
 
 =item raw_search @NODES
@@ -305,236 +580,352 @@ sub raw_search {
 	return $results_ref;
 }
 
-=item debug_on, debug_off
-
-Toggles debug mode
-
-=cut
-
-sub debug_on { $_[0]->{'debug'} = 1 }
-sub debug_off { $_[0]->{'debug'} = 0 }
-
-
-# Opens and reads a term-document matrix (TDM) file.  The format for this file
-# is described in the README
-
-
-sub _read_tdm {
-	my ( $self, $file ) = @_;
-	print "Loading TDM...\n" if $self->{'debug'} > 1;
-
-	croak "File does not exist" unless -f $file;
-	open my $fh, $file or croak "Could not open $file: $!";
-	for ( 1..4 ){
-		my $skip = <$fh>;
-	}
-	my %neighbors;
-	my $doc = 0;	
-	
-	
-	######### XS VERSION ##############
-	if ( $self->{'xs'} ) {
-		
-		my $map = $self->{'node_map'}; # shortcut alias
-		while (<$fh>) {
-			chomp;
-			my $dindex = $self->_add_node( "D:$doc", 2 );
-			#warn "Added node $doc\n";
-			my ( $count, %vals ) = split;
-			while ( my ( $term, $edge ) = each %vals ) {
-				$self->{'term_count'}{$term}++;
-				my $tnode = "T:$term";
-				
-				my $tindex = ( defined $map->{$tnode} ?
-								$map->{$tnode} : 
-							 	$self->_add_node( $tnode, 1 )
-							);
-				$self->{Graph}->set_edge( $dindex, $tindex, $edge );				
-			}
-			$doc++;
-		}
-		
-	####### PURE PERL VERSION ##########
-	} else {
-		while (<$fh>) {
-			chomp;
-			my $dnode = "D:$doc";
-			my ( $count, %vals ) = split;
-			while ( my ( $term, $edge ) = each %vals ) {
-				$self->{'term_count'}{$term}++;
-				my $tnode = "T:$term";
-				
-				$neighbors{$dnode}{$tnode} = $edge;
-				$neighbors{$tnode}{$dnode} = $edge;
-			}
-			$doc++;
-		}
-		$self->{'neighbors'} = \%neighbors;	
-	}
-	
-	print "Loaded.\n" if $self->{'debug'} > 1;
-	$self->{'from_TDM'} = 1;
-	$self->{'doc_count'} = $doc;
-}
 
 
 
-# XS version only
-#
-# This sub maintains a mapping between node names and integer index
-# values. 
 
-sub _add_node {
-	my ( $self, $node_name, $type ) = @_;
-	croak "Must provide a type" unless $type;
-	croak "Must provide a node name" unless $node_name;
-	croak "This node already exists" if 
-		 $self->{'node_map'}{$node_name};
-		
-	my $new_id = $self->{'next_free_id'}++;
-	$self->{'node_map'}{$node_name} = $new_id;
-	$self->{'id_map'}[$new_id] = $node_name;
-	$self->{'Graph'}->add_node( $new_id, $type );
-	
-	return $new_id;
-}
 
-=item add_documents %DOCS
 
-Load up the search engine with documents in the form
-TITLE => WORDS, where WORDS is either a  reference to a hash of terms
-and occurence counts, or a reference to an array of words.
-For example:
 
-	TITLE => { WORD1 => COUNT1, WORD2 => COUNT2 ... }
+=item reweight_graph
 
-or
-
-	TITLE => [ WORD1, WORD2, WORD3 ]
-
+Iterates through the graph, calculating edge weights and normalizing 
+around nodes.  This method is automatically called every time a 
+document is added, removed, or updated, unless you turn the option
+off with auto_reweight(0).   When adding a lot of docs, this can be
+time consuming, so either set auto_reweight to off or use the 
+L<bulk_add> method to add lots of docs at once
 
 =cut
 
-sub add_documents {
-
-	my ( $self, %incoming_docs ) = @_;
-
-	my @doc_list = keys %incoming_docs; # Make sure these remain in same order
+sub reweight_graph {
+	my ( $self ) = @_;
 	
-	# Add word and document nodes to the graph
-	foreach my $doc ( @doc_list ) {
-		my $dnode = 'D:'.$doc;
-		croak "Tried to add document with duplicate title: \"$doc\"\n"
-			if exists( $self->{'neighbors'}{$dnode} ) or 
-			exists $self->{'node_map'}{$dnode};
-			
-		croak "Not a reference" unless ref( $incoming_docs{$doc});
-		my $type = ref( $incoming_docs{$doc});
-		my @list;
-		if ( $type eq 'HASH' ) {
-			@list = keys %{ $incoming_docs{$doc} }
-		} elsif ( $type eq 'ARRAY' ) {
-			@list = @{$incoming_docs{$doc}};
-		} else {
-			croak "Wrong type of reference"
-		}
-		foreach my $term ( @list  ){
-			$self->{'term_count'}{$term}++;
-		}
-	}
-
-
-	$self->{'doc_count'} += scalar @doc_list;
-
-
-	# Set edges in the graph
-	foreach my $doc ( @doc_list ) {
-		# Every word in this document
+	my $n = $self->{neighbors}; #shortcut
+	my $doc_count = $self->doc_count();
+	#print "Renormalizing for doc count $doc_count\n" if $self->{debug};
+	foreach my $node ( keys %{$n} ) {
+		
+		next unless $node =~ /^D/o;
+		my @terms = keys %{ $n->{$node} };
 		my @edges;
-		my $dnode = 'D:'.$doc;
-		my $type = ref( $incoming_docs{$doc} ); 
-		my @list = ( $type eq 'HASH' ?
-					 keys %{ $incoming_docs{$doc} } :
-					 @{ $incoming_docs{$doc} }
-					);
-					
-		foreach my $term ( @list ) {		
-
-			my $tnode = 'T:'.$term;
-
-			my $lcount = ( $type eq 'HASH' ?
-						   $incoming_docs{$doc}{$term} :
-						   1);
-						   
-			my $l_weight = log( $lcount ) + 1;
-
-			# We calculate global weight in the loop to conserve memory
-			my $global_count = $self->{'term_count'}{$term};
-			my $g_weight = log( $self->{'doc_count'} /  $global_count ) + 1;
-
-			# edge weight is local weight * global weight
-			my $t_weight = ( $g_weight * $l_weight );
-			#print "Calculated edge $dnode -> $tnode with weight $t_weight", "\n"
-				# if $self->{debug};
-			push @edges, [ $dnode, $tnode, $t_weight ];
-		}
-
-		# Normalize the edges around each document so they add up to
-		# unit weight
-		my $sum;
-		$sum += $_->[2] foreach @edges;
-		$_->[2]/= $sum foreach @edges;
-
-		
-		#### XS VERSION ###############
-		if ( $self->{'xs'} ) {
-			my $map = $self->{'node_map'};
-			foreach my $e ( @edges ) {
-				my ( $doc, $term, $edge ) = @{$e};
-				my $dindex = ( exists $map->{$doc}  
-								? $map->{$doc}  
-								: $self->_add_node( $doc, 2 ) );
-								
-				my $tindex =  ( exists $map->{$term} 
-								? $map->{$term}
-								: $self->_add_node( $term, 1 ));
-								
-				$self->{Graph}->set_edge( $dindex, $tindex, $edge );
+		foreach my $t ( @terms ) {
+			
+			my $pair = $n->{$node}{$t};
+			my ( undef, $lcount ) = split /,/, $pair;
+			( my $term = $t ) =~ s/^T://;
+			croak unless $lcount;
+			my $weight;
+			if ( $self->{use_global_weights} ) {
+			
+				my $gweight = log( $doc_count / $self->doc_count( $term ) ) + 1;
+				my $lweight = log( $lcount ) + 1;
+				$weight = ( $gweight * $lweight );
+			} else {
+				
+				$weight = log( $lcount ) + 1;
 			}
-		
-		#### PURE PERL VERSION ########
-		} else {
-			foreach my $e ( @edges ) {
-				my ( $doc, $term, $edge ) = @{$e};
-				print "$doc $term edge weight is ", $edge, "\n" if $self->{debug};
-				$self->set_edge( $doc, $term, $edge );
-			}
+			push @edges, [ $node, $t, $weight, $lcount ];
 		}
 		
+		__normalize( \@edges );
+		
+		foreach my $e ( @edges ) {
+			my $pair = join ',', $e->[2], $e->[3];
+			$n->{$node}{$e->[1]} = $n->{$e->[1]}{$node} = $pair;
+		}
 	}
+	return 1;
+}
+
+
+
+
+=item update ID, WORDS
+
+Given a document identifier and a word list, updates the information for
+that document in the graph.  Returns the number of changes made
+
+=cut
+
+sub update {
+
+	my ( $self, $id, $words ) = @_;
+	
+	croak "update not implemented in XS" if $self->{xs};
+	croak "Must provide a document identifier to update_document" unless defined $id;
+	my $dnode = 'D:'.$id;
+	
+	return unless exists $self->{neighbors}{$dnode};
+	croak "must provide a word list " unless defined $words and 
+										     		ref $words and
+										    	 	( ref $words eq 'HASH' or
+										    	 	  ref $words eq 'ARRAY' );
+	
+	my $n = $self->{neighbors}{$dnode};
+	# Get the current word list
+	my @terms = keys %{ $n };
+	
+	
+	if ( ref $words eq 'ARRAY' ) {
+		my %words;
+		$words{$_}++ foreach @$words;
+		$words = \%words;
+	}
+	
+	local $self->{auto_reweight} = 0;
+	
+	my $must_reweight = 0;
+	my %seen;
+	
+	foreach my $term ( keys %{$words} ) {
+
+		my $t = 'T:'.$term;
+		
+		if ( exists $n->{$t} ){
+			
+			# Update the local count, if necessary
+			my $curr_val = $n->{$t};
+			my ( undef, $loc ) = split m/,/, $curr_val;
+			
+			unless ( $loc == $words->{$term} ) {
+				$n->{$t} = join ',', 1, $words->{$term};
+				$must_reweight++;
+			}	
+			}
+	
+		else {
+		
+			$n->{$t} = 
+				$self->{neighbors}{$t}{$dnode} = 
+				join ',', 1, $words->{$term};
+			$must_reweight++;
+		}
+		
+		$seen{$t}++;
+	}
+	
+	# Check for deleted words
+	foreach my $t ( @terms ) {
+		$must_reweight++ 
+			unless exists $seen{$t};
+	}
+	
+	$self->reweight_graph() if 
+		$must_reweight;
+	
+	return $must_reweight;
 
 }
 
+
+=item doc_count [TERM]
+
+Returns a count of all documents that TERM occurs in.
+If no argument is provided, returns a document count
+for the entire collection.
+
+=cut
 
 sub doc_count {
-	$_[0]->{'doc_count'};
+	my ( $self, $term ) = @_;
+	if ( defined $term ) {
+		$term = 'T:'.$term unless $term =~ /^T:/;
+		my $node = $self->{neighbors}{$term};
+		return 0 unless defined $node;
+		return scalar keys %{$node};
+	} else {
+		return scalar grep /D:/, 
+			keys %{ $self->{'neighbors'} };
+	}
 }
+
+
+=item doc_list [TERM]
+
+Returns a sorted list of document identifiers that contain
+TERM, in ASCII-betical order.  If no argument is given,
+returns a sorted document list for the whole collection.
+
+=cut
+
+sub doc_list {
+	my ( $self, $term ) = @_;
+	my $t;
+	if ( defined $term and $term !~ /T:/) {
+		$t = 'T:'.$term;
+	}
+	my $hash = ( defined $term ?
+				 $self->{neighbors}{$t} :
+				 $self->{neighbors} );
+				 
+	sort map { s/^D://o; $_ }
+		 grep /D:/, keys %{ $hash };
+}
+
+
+sub dump {
+	my ( $self ) = @_;
+	my @docs = $self->doc_list();
+	
+	foreach my $d ( @docs ) {
+		print $self->dump_node( $d );
+	}
+}
+
+=item dump_node NODE
+
+Lists all of the neighbors of a node, together with edge
+weights connecting to them
+
+=cut
+
+sub dump_node {
+	my ( $self, $node ) = @_;
+	
+	my @lines;
+	push @lines, join "\t", "COUNT", "WEIGHT", "NEIGHBOR";
+	
+	foreach my $n ( keys %{ $self->{neighbors}{$node} } ) {
+		my $v = $self->{neighbors}{$node}{$n};
+		my ( $weight, $count ) = split /,/, $v;
+		push @lines, join "\t", $count, substr( $weight, 0, 8 ), $n;
+	}
+	return @lines;
+}
+
+
+
+=item dump_tdm [FILE]
+
+Dumps internal state in term-document matrix (TDM) format, which looks 
+like this:
+
+	A B C B C B C
+	A B C B C B C
+	A B C B C B C
+
+Where each row represents a document, A is the number of terms in the
+document, B is the term node and C is the edge weight between the doc
+node and B.   Mostly used as a legacy format by the module author. 
+Doc and term nodes are printed in ASCII-betical sorted order, zero-based 
+indexing.  Up to you to keep track of the ID => title mappings, neener-neener!
+Use doc_list and term_list to get an equivalently sorted list
+
+=cut
+
+sub dump_tdm {
+	my ( $self, $file ) = @_;
+	
+	my $counter = 0;
+	my %lookup;
+	$lookup{$_} = $counter++ foreach $self->term_list;
+	
+	my @docs = $self->doc_list;
+	
+	my $fh;
+	if ( defined $file ) {
+		open $fh, "> $file" or croak
+			"Could not open TDM output file: $!";
+	} else {
+		*fh = *STDOUT;
+	}
+	foreach my $doc ( @docs ) {
+		my $n = $self->{neighbors}{$doc};
+		
+		my $row_count = scalar keys %{$n};
+		print $fh $row_count;
+		
+		foreach my $t ( sort keys %{$doc} ) {
+			my $index = $lookup{$t};
+			my ( $weight, undef ) = split m/,/, $n->{$t};
+			print $fh ' ', $index, ' ', $weight;
+		}
+		print $fh "\n";
+	}
+}
+
+
+
+
+=item term_count [DOC]
+
+Returns the number of unique terms in a document or,
+if no document is specified, in the entire collection.
+
+=cut
 
 sub term_count {
-	scalar $_[0]->dump_words();
+	my ( $self, $doc ) = @_;
+	if ( defined $doc ) {
+		my $node = $self->{neighbors}{'D:'.$doc};
+		return 0 unless defined $node;
+		return scalar keys %{$node};
+	} else {
+		return scalar grep /T:/, 
+		keys %{ $self->{neighbors} };
+	}
 }
 
-sub retrieve {
-	my ( $self, $file ) = @_;
-	Storable::retrieve( $file );
+
+=item term_list [DOC]
+
+Returns a sorted list of unique terms appearing in the document
+with identifier DOC, in ASCII-betical order.  If no argument is
+given, returns a sorted term list for the whole collection.
+
+=cut
+
+sub term_list {
+	my ( $self, $doc ) = @_;
+	
+	my $node = ( defined $doc ?
+				 $self->{neighbors}{'D:'.$doc} :
+				 $self->{neighbors}
+			 );
+		
+	sort map { s/^T://o; $_ }
+		 grep /T:/, keys %{ $self->{neighbors} };
 }
 
 
-sub dump_words {
 
-	my ( $self ) = @_;
-	return keys %{ $self->{'term_count'} };
+=item word_count [TERM]
+
+Returns the total occurence count for a term, or if no argument is given,
+a word count for the entire collection.  The word count is always greater than
+or equal to the term count.
+
+=cut
+
+sub word_count {
+
+	my ( $self, $term ) = @_;
+	
+	my $n = $self->{neighbors}; # shortcut
+	
+	my $count = 0;
+	my @terms;
+	if ( defined $term ) {
+		push @terms, $term;
+	}	else {
+		@terms = $self->term_list();
+	}
+	
+	foreach my $term (@terms ) {
+		$term = 'T:'.$term unless $term =~/^T:/o;
+		foreach my $doc ( keys %{ $n->{$term} } ) {
+			( undef, my $lcount ) = split /,/, $n->{$term}{$doc};
+			$count += $lcount;
+		}
+	}
+
+	return $count;
 }
+
+
+
+
 
 =item search @QUERY
 
@@ -639,6 +1030,7 @@ sub _partition {
 	return ( $docs, $words );
 }
 
+
 sub _nodeify {
 	my ( $self, $prefix, @list ) = @_;
 	my @nodes;
@@ -654,34 +1046,91 @@ sub _nodeify {
 
 
 
-sub degree {
-	my ($self, $node ) = @_;
-	if ( exists ( $self->{'neighbors'}{$node} ) ) {
-		return scalar keys %{ $self->{'neighbors'}{$node} };
+sub _read_tdm {
+	my ( $self, $file ) = @_;
+	print "Loading TDM...\n" if $self->{'debug'} > 1;
+
+	croak "File does not exist" unless -f $file;
+	open my $fh, $file or croak "Could not open $file: $!";
+	for ( 1..4 ){
+		my $skip = <$fh>;
 	}
-}
-
-
-
-sub set_edge {
-	my ( $self, $source, $sink, $value ) = @_;
-	croak "No source node" unless defined $source;
-	croak "No sink node" unless defined $sink;
-	croak "no value defined " unless defined $value;
-
-	if ( $value > 1 ) {
-		croak "found edge exceeding unit weight\n";
+	my %neighbors;
+	my $doc = 0;	
+	
+	
+	######### XS VERSION ##############
+	if ( $self->{'xs'} ) {
+		
+		my $map = $self->{'node_map'}; # shortcut alias
+		while (<$fh>) {
+			chomp;
+			my $dindex = $self->_add_node( "D:$doc", 2 );
+			#warn "Added node $doc\n";
+			my ( $count, %vals ) = split;
+			while ( my ( $term, $edge ) = each %vals ) {
+				$self->{'term_count'}{$term}++;
+				my $tnode = "T:$term";
+				
+				my $tindex = ( defined $map->{$tnode} ?
+								$map->{$tnode} : 
+							 	$self->_add_node( $tnode, 1 )
+							);
+				$self->{Graph}->set_edge( $dindex, $tindex, $edge );				
+			}
+			$doc++;
+		}
+		
+	####### PURE PERL VERSION ##########
+	} else {
+		while (<$fh>) {
+			chomp;
+			my $dnode = "D:$doc";
+			my ( $count, %vals ) = split;
+			while ( my ( $term, $edge ) = each %vals ) {
+				$self->{'term_count'}{$term}++;
+				my $tnode = "T:$term";
+				
+				$neighbors{$dnode}{$tnode} = $edge.',1';
+				$neighbors{$tnode}{$dnode} = $edge.',1';
+			}
+			$doc++;
+		}
+		$self->{'neighbors'} = \%neighbors;	
 	}
 	
-	if ( defined $self->{'neighbors'}{$source}{$sink} or
-		 defined $self->{'neighbors'}{$sink}{$source} ){
-		 	die "Found existing edge ( $sink, $source )";
-		 }
-		
-	$self->{'neighbors'}{$source}{$sink} = $value;
-	$self->{'neighbors'}{$sink}{$source} = $value;
+	print "Loaded.\n" if $self->{'debug'} > 1;
+	$self->{'from_TDM'} = 1;
+	$self->{'doc_count'} = $doc;
 }
 
+
+
+# XS version only
+#
+# This sub maintains a mapping between node names and integer index
+# values. 
+
+sub _add_node {
+	my ( $self, $node_name, $type ) = @_;
+	croak "Must provide a type" unless $type;
+	croak "Must provide a node name" unless $node_name;
+	croak "This node already exists" if 
+		 $self->{'node_map'}{$node_name};
+		
+	my $new_id = $self->{'next_free_id'}++;
+	$self->{'node_map'}{$node_name} = $new_id;
+	$self->{'id_map'}[$new_id] = $node_name;
+	$self->{'Graph'}->add_node( $new_id, $type );
+	
+	return $new_id;
+}
+
+
+
+#
+# 	INTERNAL METHODS
+# 
 
 # Wipe the graph free of stored energies
 
@@ -689,6 +1138,7 @@ sub _clear {
 	my ( $self ) = @_;
 	$self->{'energy'} = undef;
 }
+
 
 # Gather the stored energy values from the graph
 
@@ -703,10 +1153,10 @@ sub _collect {
 	return $result;
 }
 
+
+
  #  Assign a starting energy ENERGY to NODE, and recursively distribute  the 
  #  energy to neighbor nodes.   Singleton nodes get special treatment 
-
-
 
 sub _energize {
 
@@ -716,12 +1166,16 @@ sub _energize {
 	return unless defined $self->{'neighbors'}{$node};
 	my $orig = $self->{'energy'}{$node} || 0;
 	$self->{'energy'}->{$node} += $energy;
+	return if ( $self->{depth} == $self->{max_depth} );
 	$self->{'depth'}++;
 
 	if ( $self->{'debug'} > 1 ) {
 		print '   ' x $self->{'depth'};
 		print "$node: energizing  $orig + $energy\n";
 	}
+	
+	
+	
 	#sleep 1;
 	my $degree = scalar keys %{ $self->{'neighbors'}->{$node} };
 
@@ -744,7 +1198,8 @@ sub _energize {
 		"$node: propagating subenergy $subenergy to $degree neighbors\n"
 		 if $self->{'debug'} > 1;
 		foreach my $neighbor ( keys %{ $self->{'neighbors'}{$node} } ) {
-			my $edge = $self->{'neighbors'}{$node}{$neighbor};
+			my $pair = $self->{'neighbors'}{$node}{$neighbor};
+			my ( $edge, undef ) = split /,/, $pair;
 			my $weighted_energy = $subenergy * $edge;
 			print '   ' x $self->{'depth'}, 
 			" edge $edge ($node, $neighbor)\n"
@@ -757,14 +1212,23 @@ sub _energize {
 }
 
 
-sub get_neighbors {
-	my ( $self, $node ) = @_;
-	my @list;
-	foreach my $n ( keys %{ $self->{'neighbors'}{$node} } ){
-		push @list, [$n, $self->{'neighbors'}{$node}{$n}];
-	}
-	return @list;
+# Given an array, normalize using cosine normalization
+
+sub __normalize {
+	my ( $arr ) = @_;
+	
+	croak "Must provide array ref to __normalize" unless
+		defined $arr and
+		ref $arr and
+		ref $arr eq 'ARRAY';
+		
+	my $sum;
+	$sum += $_->[2] foreach @{$arr};
+	$_->[2]/= $sum foreach @{$arr};
+	return 1;
 }
+
+
 
 
 sub DESTROY {
@@ -780,10 +1244,6 @@ sub DESTROY {
 =over
 
 =item * Document-document links are not yet implemented
-
-=item * No way to delete nodes once they're in the graph
-
-=item * No way to break edges once they're in the graph
 
 =item * Can't store graph if using compiled C internals
 
